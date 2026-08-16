@@ -16,6 +16,7 @@ data/runtime/*
 logs/*
 cache/*
 
-# Local archives and editor-specific state.
+# Local archives and editor/agent-specific state.
 *.zip
 .vscode/
+.kiro/
