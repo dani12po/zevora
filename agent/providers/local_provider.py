@@ -8,6 +8,7 @@ import psutil
 
 from ..config import settings
 from .base import AIProvider
+from .local_intelligence import LocalProviderMetadata, messages_to_prompt
 from .errors import ModelNotFoundError, ProviderUnavailableError
 
 
@@ -148,6 +149,7 @@ def local_runtime_status() -> dict:
 
 class LocalProvider(AIProvider):
     name = 'local'
+    provider_id = 'local'
 
     def __init__(self, model_id: str | None = None):
         self.default_model = model_id or settings.local_model_name
@@ -197,6 +199,28 @@ class LocalProvider(AIProvider):
 
     async def complete(self, prompt: str, system: str = '') -> tuple[str, dict]:
         return await asyncio.to_thread(_RUNTIME.complete, prompt, system)
+
+    async def health(self) -> bool:
+        return await self.health_check()
+
+    async def generate(self, messages: list[dict[str, str]], **kwargs) -> tuple[str, dict]:
+        prompt, system = messages_to_prompt(messages)
+        return await self.complete(prompt, system)
+
+    def capabilities(self) -> set[str]:
+        return {'text', 'general', 'coding', 'reasoning', 'tool_use', 'json', 'local', 'private'}
+
+    def metadata(self) -> LocalProviderMetadata:
+        status = local_runtime_status()
+        return LocalProviderMetadata(
+            provider_id=self.provider_id,
+            name='Zevora Local Intelligence',
+            model_id=self.default_model,
+            capabilities=frozenset(self.capabilities()),
+            runtime=str(status.get('runtime') or 'unknown'),
+            context_length=settings.local_model_context_length,
+            installed=bool(status.get('model_exists')),
+        )
 
     async def complete_for_model(
         self, prompt: str, system: str = '', model_id: str = ''

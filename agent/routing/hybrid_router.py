@@ -4,6 +4,7 @@ from enum import Enum
 from ..config import settings
 from ..models import capabilities as cap
 from ..providers.registry import provider_policy
+from ..storage.context_economy import estimate_tokens
 from .task_classifier import TaskClassifier
 
 
@@ -24,6 +25,11 @@ class RoutingDecision:
     complexity_score: float
     tools: list[str]
     estimated_cost: float | None
+    estimated_context_tokens: int = 0
+    capability_score: float = 0.0
+    adaptive_confidence: float = 0.5
+    routing_score: float = 0.0
+    availability: str = 'unknown'
 
     def to_dict(self):
         return {**asdict(self), 'route': self.route.value}
@@ -40,10 +46,36 @@ class AdaptiveHybridRouter:
     def __init__(self, classifier=None):
         self.classifier = classifier or TaskClassifier()
 
-    def _capability(self, model: dict, task) -> float:
+    @staticmethod
+    def _context_window(model: dict) -> int | None:
+        value = model.get('context_window')
+        if value is None:
+            value = (model.get('compatibility') or {}).get('context_window')
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    @staticmethod
+    def _supports_tools(model: dict) -> bool:
+        declared = model.get('supports_tools')
+        if declared is not None:
+            return declared is True
+        compatibility = model.get('compatibility') or {}
+        if compatibility.get('supports_tools') is not None:
+            return compatibility.get('supports_tools') is True
+        return cap.TOOL_USE in set(model.get('capabilities', []))
+
+    def _capability(self, model: dict, task, context_tokens: int = 0) -> float:
         capabilities = set(model.get('capabilities', []))
         required = set(task.required_capabilities)
         if required and not required.issubset(capabilities):
+            return 0.0
+        if task.requires_tools and not self._supports_tools(model):
+            return 0.0
+        context_window = self._context_window(model)
+        if context_window is not None and context_tokens > context_window:
             return 0.0
         profile = model.get('capability_profile', {})
         scores = [
@@ -51,7 +83,31 @@ class AdaptiveHybridRouter:
             profile.get('reasoning_score', 0.5 if cap.REASONING in required else 1.0),
             profile.get('instruction_score', 0.5),
         ]
-        return min(scores)
+        return min(max(0.0, min(float(score), 1.0)) for score in scores)
+
+    @staticmethod
+    def _available(model: dict, local: bool) -> bool:
+        if model.get('availability') != 'verified' or model.get('health_status') != 'healthy':
+            return False
+        if local and model.get('installed') is False:
+            return False
+        compatibility = model.get('compatibility') or {}
+        return not any(
+            compatibility.get(key) is False
+            for key in ('compatible', 'app_compatible', 'runtime_compatible')
+        )
+
+    @staticmethod
+    def _estimated_cost(
+        model: dict, context_tokens: int, expected_output_tokens: int
+    ) -> float | None:
+        input_price = model.get('input_price')
+        output_price = model.get('output_price')
+        if input_price is None and output_price is None:
+            return None
+        input_cost = float(input_price or 0) * max(context_tokens, 0) / 1_000_000
+        output_cost = float(output_price or 0) * max(expected_output_tokens, 0) / 1_000_000
+        return input_cost + output_cost
 
     def _adaptive_confidence(self, model: dict, performance: dict) -> float:
         history = performance.get((model.get('provider'), model.get('model_id')), {})
@@ -71,6 +127,8 @@ class AdaptiveHybridRouter:
         excluded_providers: set[str],
         excluded_models: set[tuple[str, str]],
         performance: dict | None = None,
+        context_tokens: int = 0,
+        expected_output_tokens: int = 512,
     ) -> dict | None:
         candidates = []
         adaptive = performance or {}
@@ -90,37 +148,62 @@ class AdaptiveHybridRouter:
                 or not policy['enabled']
             ):
                 continue
-            if (
-                model.get('availability') != 'verified'
-                or model.get('health_status') != 'healthy'
-            ):
+            if not self._available(model, local):
                 continue
-            score = self._capability(model, task)
-            if not score:
+            capability_score = self._capability(model, task, context_tokens)
+            if not capability_score:
                 continue
             preferred = model_id == policy.get('default_model')
-            cost = (
-                model.get('input_price')
-                if model.get('input_price') is not None
-                else float('inf')
+            estimated_cost = self._estimated_cost(
+                model, context_tokens, expected_output_tokens
             )
+            cost_rank = estimated_cost if estimated_cost is not None else float('inf')
             confidence = (
                 self._adaptive_confidence(model, adaptive) if use_history else .5
             )
-            candidates.append((
-                -confidence, not preferred, cost, -score,
-                -policy['routing_priority'], model,
-            ))
+            routing_score = confidence * .60 + capability_score * .40
+            enriched = {
+                **model,
+                '_routing_capability_score': capability_score,
+                '_routing_confidence': confidence,
+                '_routing_score': routing_score,
+                '_routing_estimated_cost': estimated_cost,
+                '_routing_context_tokens': context_tokens,
+            }
+            if use_history:
+                rank = (
+                    -routing_score, not preferred, cost_rank,
+                    -policy['routing_priority'], enriched,
+                )
+            else:
+                rank = (
+                    not preferred, cost_rank, -capability_score,
+                    -policy['routing_priority'], enriched,
+                )
+            candidates.append(rank)
         return min(candidates, key=lambda item: item[:-1])[-1] if candidates else None
 
     def _rank_pool(
-        self, models: list[dict], task, local: bool, performance: dict | None
+        self,
+        models: list[dict],
+        task,
+        local: bool,
+        performance: dict | None,
+        context_tokens: int,
+        expected_output_tokens: int,
     ) -> list[RoutingDecision]:
         ranked = []
         excluded_models: set[tuple[str, str]] = set()
         while True:
             model = self._select_model(
-                models, task, local, set(), excluded_models, performance
+                models,
+                task,
+                local,
+                set(),
+                excluded_models,
+                performance,
+                context_tokens,
+                expected_output_tokens,
             )
             if not model:
                 return ranked
@@ -138,17 +221,40 @@ class AdaptiveHybridRouter:
         task, model: dict, route: Route, reason: str
     ) -> RoutingDecision:
         return RoutingDecision(
-            route, model['provider'], model['model_id'], reason,
-            task.labels, task.complexity_score, task.requires_tools, None,
+            route=route,
+            provider=model['provider'],
+            model_id=model['model_id'],
+            reason=reason,
+            task_type=task.labels,
+            complexity_score=task.complexity_score,
+            tools=task.requires_tools,
+            estimated_cost=model.get('_routing_estimated_cost'),
+            estimated_context_tokens=model.get('_routing_context_tokens', 0),
+            capability_score=model.get('_routing_capability_score', 0.0),
+            adaptive_confidence=model.get('_routing_confidence', 0.5),
+            routing_score=model.get('_routing_score', 0.0),
+            availability=model.get('availability', 'unknown'),
         )
 
     def candidates(
-        self, prompt: str, models: list[dict], performance: dict | None = None
+        self,
+        prompt: str,
+        models: list[dict],
+        performance: dict | None = None,
+        context_tokens: int = 0,
+        expected_output_tokens: int = 512,
     ) -> list[RoutingDecision]:
         """Return healthy capable models in mode-aware fallback order."""
         task = self.classifier.classify(prompt)
-        local = self._rank_pool(models, task, True, performance)
-        cloud = self._rank_pool(models, task, False, performance)
+        estimated_context_tokens = max(0, context_tokens) + estimate_tokens(prompt)
+        local = self._rank_pool(
+            models, task, True, performance,
+            estimated_context_tokens, expected_output_tokens,
+        )
+        cloud = self._rank_pool(
+            models, task, False, performance,
+            estimated_context_tokens, expected_output_tokens,
+        )
         mode = settings.routing_mode.upper()
         if mode == 'LOCAL_ONLY':
             return local
@@ -169,6 +275,8 @@ class AdaptiveHybridRouter:
         exclude_providers: set[str] | None = None,
         exclude_models: set[tuple[str, str]] | None = None,
         performance: dict | None = None,
+        context_tokens: int = 0,
+        expected_output_tokens: int = 512,
     ) -> RoutingDecision:
         task = self.classifier.classify(prompt)
         if cache_hit:
@@ -178,7 +286,13 @@ class AdaptiveHybridRouter:
             )
         excluded_providers = exclude_providers or set()
         excluded_models = exclude_models or set()
-        for candidate in self.candidates(prompt, models, performance):
+        for candidate in self.candidates(
+            prompt,
+            models,
+            performance,
+            context_tokens=context_tokens,
+            expected_output_tokens=expected_output_tokens,
+        ):
             if (
                 candidate.provider not in excluded_providers
                 and (candidate.provider or '', candidate.model_id or '')

@@ -51,9 +51,16 @@ MCP Tools (optional)  ← Filesystem · Git · Terminal (approval-gated)
 zevora start       # start gateway in background
 zevora stop        # graceful shutdown
 zevora status      # check if running
+zevora intelligence # local model, skills, evolution, and privacy status
 zevora open        # open browser
 zevora background  # start + detach
+zevora uninstall-local # preview managed package removal
+zevora uninstall-local --approve # remove only the managed local package
 ```
+
+`uninstall-local` never removes externally configured GGUF files. The command and
+`POST /api/local-intelligence/uninstall` are dry-run by default and require explicit
+approval for deletion.
 
 ## Configuration
 
@@ -70,8 +77,11 @@ ZEVORA. The model loads lazily on first local generation, and the Providers
 page reports loaded state, process RSS, model size, context, and load delta.
 
 AUTO routes lightweight work local-first and complex, architecture, migration,
-vision, and long-context work cloud-first. A failed or quality-rejected local
-response tries cloud next; a failed cloud response tries local when capable.
+vision, and long-context work cloud-first. Candidate eligibility also checks the
+estimated context window, explicit required tools, installed package state,
+verified health, compatibility, cost, and mature success/quality/latency history.
+A failed or quality-rejected local response tries cloud next; a failed cloud
+response tries local when capable.
 
 ## What "Local Intelligence" means
 
@@ -85,6 +95,20 @@ ZEVORA's local data layer remains:
 
 The local model and cloud providers share the same `AIProvider`, registry,
 discovery, router, quality gate, and fallback execution path.
+
+## Continuous Improvement And Privacy
+
+The Skill Registry loads only bounded, trusted or verified skills on demand.
+Evolution stores compact structured outcomes, requires repeated verified quality
+before promotion, and creates future training candidates without modifying model
+weights after user tasks. Collective learning is disabled by default, requires
+per-type consent, sanitizes allowlisted payloads, and requires separate approval
+before publishing. API keys, prompts, full conversations, and private paths are
+not contribution data.
+
+Updates use HTTPS or local files, SHA-256 verification, staging, atomic activation,
+backups, compatibility checks, and rollback. GitHub or another registry is a
+release/source location, never a raw user database.
 
 ## Offline Capabilities (No API Key)
 

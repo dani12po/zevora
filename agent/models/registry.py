@@ -1,19 +1,66 @@
-import json, sqlite3
+"""SQLite-backed provider/model catalog with backward-compatible metadata."""
+from __future__ import annotations
+
+import json
+import sqlite3
 from pathlib import Path
+
 from .metadata import ModelMetadata
 
+
 class ModelRegistry:
-    def __init__(self,database:Path):
-        database.parent.mkdir(parents=True,exist_ok=True); self.database=database
-        with self.connection() as conn: conn.execute('CREATE TABLE IF NOT EXISTS models (provider TEXT, model_id TEXT, metadata TEXT NOT NULL, PRIMARY KEY(provider,model_id))')
-    def connection(self): return sqlite3.connect(self.database)
-    def upsert(self,model:ModelMetadata):
-        with self.connection() as conn: conn.execute('INSERT OR REPLACE INTO models VALUES(?,?,?)',(model.provider,model.model_id,json.dumps(model.to_dict())))
-    def list(self,provider=None):
+    def __init__(self, database: Path):
+        database.parent.mkdir(parents=True, exist_ok=True)
+        self.database = database
         with self.connection() as conn:
-            rows=conn.execute('SELECT metadata FROM models'+(' WHERE provider=?' if provider else ''),((provider,) if provider else ())).fetchall()
+            conn.execute(
+                'CREATE TABLE IF NOT EXISTS models '
+                '(provider TEXT, model_id TEXT, metadata TEXT NOT NULL, '
+                'PRIMARY KEY(provider,model_id))'
+            )
+            conn.execute(
+                'CREATE TABLE IF NOT EXISTS registry_meta '
+                '(key TEXT PRIMARY KEY, value TEXT NOT NULL)'
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO registry_meta(key,value) VALUES('schema_version','2')"
+            )
+
+    def connection(self):
+        return sqlite3.connect(self.database)
+
+    def upsert(self, model: ModelMetadata | dict):
+        payload = model.to_dict() if isinstance(model, ModelMetadata) else dict(model)
+        provider = str(payload.get('provider') or '')
+        model_id = str(payload.get('model_id') or '')
+        if not provider or not model_id:
+            raise ValueError('model metadata requires provider and model_id')
+        with self.connection() as conn:
+            conn.execute(
+                'INSERT OR REPLACE INTO models VALUES(?,?,?)',
+                (provider, model_id, json.dumps(payload, sort_keys=True)),
+            )
+
+    def list(self, provider=None):
+        with self.connection() as conn:
+            rows = conn.execute(
+                'SELECT metadata FROM models' + (' WHERE provider=?' if provider else ''),
+                ((provider,) if provider else ()),
+            ).fetchall()
         return [json.loads(row[0]) for row in rows]
-    def replace_provider(self,provider,models):
+
+    def replace_provider(self, provider, models):
+        payloads = [m.to_dict() if isinstance(m, ModelMetadata) else dict(m) for m in models]
         with self.connection() as conn:
-            conn.execute('DELETE FROM models WHERE provider=?',(provider,))
-            conn.executemany('INSERT INTO models VALUES(?,?,?)',[(m.provider,m.model_id,json.dumps(m.to_dict())) for m in models])
+            conn.execute('DELETE FROM models WHERE provider=?', (provider,))
+            conn.executemany(
+                'INSERT INTO models VALUES(?,?,?)',
+                [(
+                    item.get('provider', provider),
+                    item['model_id'],
+                    json.dumps(item, sort_keys=True),
+                ) for item in payloads],
+            )
+
+    def installed_local_packages(self) -> list[dict]:
+        return [item for item in self.list('local') if item.get('installed') is True]

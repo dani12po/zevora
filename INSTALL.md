@@ -31,7 +31,16 @@ python launcher.py
 
 The gateway does not load the GGUF during startup. The first eligible local
 request loads it through llama.cpp and the Providers page reports loaded state,
-process RSS, model size, context, and load delta.
+process RSS, model size, context, and load delta. Local runtime selection is
+provider-agnostic:
+
+- `LOCAL_MODEL_RUNTIME=llamacpp` uses the bundled GGUF adapter.
+- `LOCAL_MODEL_RUNTIME=ollama` uses the local Ollama `/api/chat` adapter.
+- `LOCAL_MODEL_RUNTIME=openai-compatible` uses a local `/v1/chat/completions` endpoint.
+
+Ollama and endpoint adapters do not require cloud API keys. The model registry
+records only discovered metadata and explicit capability values; unknown
+capabilities remain unknown.
 
 On Windows, install the prebuilt CPU runtime inside the project virtual
 environment. The extra index avoids requiring Visual C++ Build Tools:
@@ -62,6 +71,28 @@ Open `http://127.0.0.1:7432/providers` to configure keys via the dashboard.
 
 API keys are stored only in `.env`. They are never written to the database,
 logs, cache, or shown in the UI.
+
+## Privacy, Evolution, And Updates
+
+Collective learning is disabled by default. Enable it only after reviewing the
+per-type consent settings (`COLLECTIVE_CONSENT_SKILLS`, `COLLECTIVE_CONSENT_KNOWLEDGE`,
+`COLLECTIVE_CONSENT_ROUTING`, and `COLLECTIVE_CONSENT_EVALUATION`). Contributions
+are sanitized and publication still requires explicit approval. API keys never
+enter memory, cache, knowledge, experience, telemetry, contributions, or GitHub.
+
+Verified updates require an HTTPS or local file manifest with component versions,
+compatibility, sizes, and SHA-256 hashes. Components are staged, checked, atomically
+activated, backed up, and rollback-capable. Downloaded artifacts are never executed.
+
+Inspect runtime state with:
+
+```powershell
+zevora intelligence
+```
+
+Preview managed local-package removal with `zevora uninstall-local`; add
+`--approve` only when the reported package path is correct. External model files
+are preserved.
 
 ## First Run Without A Cloud Key
 

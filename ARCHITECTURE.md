@@ -52,11 +52,13 @@ can change or verification can run again.
 
 ## Local Intelligence
 
-ZEVORA includes a real local inference provider named **Zevora Local AI**. It
-runs the bundled GGUF through `llama-cpp-python` and llama.cpp, loads the model
-only on the first eligible request, and does not require an API key or an
-Ollama daemon. ZEVORA did not modify, train, or take ownership of the underlying
-model weights.
+ZEVORA includes a provider-agnostic local intelligence contract. The bundled
+**Zevora Local AI** adapter runs GGUF through `llama-cpp-python` and llama.cpp;
+Ollama and OpenAI-compatible local endpoints are separate adapters selected by
+`LOCAL_MODEL_RUNTIME`. Local packages have versioned manifests, runtime/format,
+compatibility, size, and SHA-256 metadata. Hardware diagnostics discover CPU,
+RAM, disk, GPU/VRAM when available, and existing external models without copying
+them. ZEVORA does not modify, train, or take ownership of model weights.
 
 | Component | Purpose |
 |-----------|---------|
@@ -94,9 +96,12 @@ discovered, scored, and routed without requiring code changes.
 `AdaptiveHybridRouter` keeps local and cloud candidate pools while preserving the
 provider registry and model metadata contracts. In `AUTO` mode it orders local
 models first for routine work and cloud models first for complex or vision work.
-`LOCAL_ONLY` and `CLOUD_ONLY` restrict the candidate pool. Capability match, cost,
-historical success rate, routing priority, and task complexity all contribute to
-selection.
+`LOCAL_ONLY` and `CLOUD_ONLY` restrict the candidate pool but do not change
+ZEVORA's intrinsic hybrid architecture. A model is eligible only when health,
+availability, explicit capabilities, required tool support, context window,
+local installation state, and package compatibility allow it. Ranking combines
+capability quality, estimated input/output cost, mature success/quality/latency
+history, provider priority, and configured defaults.
 
 The gateway quality-checks each response. A rejected response or provider error
 is recorded in the fallback trace and advances to the next capable candidate.
@@ -120,22 +125,42 @@ mutation receipts are compressed into bounded knowledge records. Normalized
 problem hashes merge duplicates and reuse increases hit counts, while retention
 removes only expired low-value records.
 
-## Basic skill source
+## Skills, Evolution, And Updates
 
-`agent/skills/openclaw.py` loads read-only reference skills from
-`BASIC_SKILLS_DIR` on-demand. At most two matching skills are loaded per
-request, capped at 8 000 characters total, filtered by `BASIC_SKILLS_ALLOWLIST`.
-Skills are never stored in the database or loaded at idle.
+The bounded OpenClaw source remains read-only and allowlisted. The versioned
+Skill Registry stores normalized metadata and bounded instructions in SQLite,
+loads relevant skills on demand, and excludes untrusted/rejected skills. Skill
+tool requirements are declarations only; all execution remains under MCP
+permissions and approval gates.
+
+The Evolution Engine consumes compact structured experiences, not raw prompts.
+Promotion requires successful, verified, repeated observations and explicit
+approval for evolved skills. Model evolution is limited to privacy-reviewed
+training candidates for optional future LoRA/QLoRA/fine-tuning; live weights are
+never changed per task.
+
+Collective contributions require global enablement, type-specific consent,
+allowlist sanitization, and explicit publication approval. The queue stores
+sanitized payloads and hashes only.
+
+The verified updater accepts HTTPS or local file components, checks compatibility,
+size, SHA-256, and traversal-free destinations, then stages and atomically
+activates with backups and rollback. It never executes downloaded artifacts.
+
+`GET /api/evolution/status`, `zevora intelligence`, and the Local Intelligence
+page expose bounded model, skill, evolution, collective, and update status.
 
 ## Implementation status
 
 | Phase | Status |
 |-------|--------|
 | Gateway, local/cloud providers, cache, memory, experience, project discovery | Implemented |
-| Adaptive hybrid routing and bidirectional quality-gated fallback | Implemented |
+| Provider-agnostic local adapters, packages, registry, and hardware diagnostics | Implemented |
+| Adaptive hybrid routing with context/tools/cost/quality/history gates | Implemented |
 | Approval-gated planning, MCP execution, observations, and verification | Implemented |
-| Flow telemetry and chat metadata persistence | Implemented |
+| Flow telemetry, context economy, and chat metadata persistence | Implemented |
 | Knowledge extraction, bounded compression, deduplication, and pruning | Implemented |
-| Local runtime telemetry and Providers UI status | Implemented |
+| Dynamic skills, validated evolution, consented contributions, and training candidates | Implemented |
+| Verified staged updates, rollback, CLI/API/UI status, and managed uninstall | Implemented |
 | Semantic cache, automatic approval-safe repair planning, advanced policy routing | Planned |
-| RAG, evaluation, fine-tuning | Planned |
+| Optional future RAG, evaluation expansion, and fine-tuning workflows | Contract only |

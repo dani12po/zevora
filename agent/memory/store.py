@@ -46,6 +46,48 @@ class Store:
             conn.execute('''CREATE TABLE IF NOT EXISTS routing_experiences (
                 id INTEGER PRIMARY KEY, route TEXT, provider TEXT, model TEXT, task_type TEXT,
                 success INTEGER, quality_score REAL, latency_ms INTEGER, tool_usage TEXT, created_at TEXT NOT NULL)''')
+            conn.executescript('''
+            CREATE TABLE IF NOT EXISTS schema_meta (
+              key TEXT PRIMARY KEY, value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS memory_records (
+              id INTEGER PRIMARY KEY, scope TEXT NOT NULL, content TEXT NOT NULL,
+              content_hash TEXT NOT NULL, project TEXT, task_type TEXT,
+              confidence REAL DEFAULT 0.5, importance REAL DEFAULT 0.5,
+              usage_count INTEGER DEFAULT 0, created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL, UNIQUE(scope, content_hash, project)
+            );
+            CREATE TABLE IF NOT EXISTS structured_experiences (
+              id INTEGER PRIMARY KEY, task_class TEXT NOT NULL, route TEXT,
+              result TEXT NOT NULL, provider TEXT, model TEXT, skill_ids TEXT,
+              confidence REAL DEFAULT 0.5, execution_time_ms INTEGER,
+              reuse_count INTEGER DEFAULT 0, verified INTEGER DEFAULT 0,
+              content_hash TEXT UNIQUE, created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS context_metrics (
+              id INTEGER PRIMARY KEY, task_type TEXT, provider TEXT, model TEXT,
+              estimated_context_tokens INTEGER DEFAULT 0,
+              compressed_tokens INTEGER DEFAULT 0, removed_tokens INTEGER DEFAULT 0,
+              provider_tokens INTEGER DEFAULT 0, cache_saved_tokens INTEGER DEFAULT 0,
+              context_hash TEXT, created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS contribution_queue (
+              id INTEGER PRIMARY KEY, contribution_type TEXT NOT NULL,
+              payload_json TEXT NOT NULL, content_hash TEXT UNIQUE,
+              consent_scope TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+              rejection_reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS training_candidates (
+              id INTEGER PRIMARY KEY, candidate_type TEXT NOT NULL,
+              payload_json TEXT NOT NULL, content_hash TEXT UNIQUE,
+              privacy_status TEXT NOT NULL DEFAULT 'pending',
+              evaluation_status TEXT NOT NULL DEFAULT 'pending',
+              created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            ''')
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_meta(key,value) VALUES('store_schema_version','2')"
+            )
             for column, definition in [('last_accessed','TEXT'),('size_bytes','INTEGER DEFAULT 0'),('hit_count','INTEGER DEFAULT 0')]:
                 try: conn.execute(f'ALTER TABLE exact_cache ADD COLUMN {column} {definition}')
                 except sqlite3.OperationalError: pass
@@ -117,6 +159,55 @@ class Store:
         result={'conversation':0,'project':0,'experience':0,'preferences':0}
         result.update({row['kind']:row['count'] for row in rows})
         return result
+    def add_context_metrics(self, task_type, provider, model, metrics):
+        """Persist counts and hashes only; never persist the context payload."""
+        with self.connection() as conn:
+            conn.execute(
+                '''INSERT INTO context_metrics(
+                   task_type,provider,model,estimated_context_tokens,compressed_tokens,
+                   removed_tokens,provider_tokens,cache_saved_tokens,context_hash,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,datetime('now'))''',
+                (
+                    task_type, provider, model,
+                    int(metrics.get('estimated_context_tokens', 0)),
+                    int(metrics.get('compressed_tokens', 0)),
+                    int(metrics.get('removed_tokens', 0)),
+                    int(metrics.get('provider_tokens', 0)),
+                    int(metrics.get('cache_saved_tokens', 0)),
+                    str(metrics.get('context_hash', '')),
+                ),
+            )
+
+    def add_structured_experience(self, record: dict):
+        """Store a compact task outcome, never a full prompt or conversation."""
+        import json
+        normalized = {
+            'task_class': str(record.get('task_class') or 'unknown'),
+            'route': str(record.get('route') or ''),
+            'result': str(record.get('result') or 'unknown'),
+            'provider': str(record.get('provider') or ''),
+            'model': str(record.get('model') or ''),
+            'skill_ids': sorted(set(record.get('skill_ids') or [])),
+            'confidence': float(record.get('confidence', .5)),
+            'execution_time_ms': int(record.get('execution_time_ms') or 0),
+            'verified': bool(record.get('verified', False)),
+        }
+        digest = hashlib.sha256(json.dumps(normalized, sort_keys=True).encode()).hexdigest()
+        with self.connection() as conn:
+            conn.execute(
+                '''INSERT OR IGNORE INTO structured_experiences(
+                   task_class,route,result,provider,model,skill_ids,confidence,
+                   execution_time_ms,reuse_count,verified,content_hash,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,0,?,?,datetime('now'))''',
+                (
+                    normalized['task_class'], normalized['route'], normalized['result'],
+                    normalized['provider'], normalized['model'], json.dumps(normalized['skill_ids']),
+                    normalized['confidence'], normalized['execution_time_ms'],
+                    int(normalized['verified']), digest,
+                ),
+            )
+        return digest
+
     def add_routing_experience(self,route,provider,model,task_type,success,quality_score,latency_ms,tool_usage):
         with self.connection() as conn: conn.execute("INSERT INTO routing_experiences(route,provider,model,task_type,success,quality_score,latency_ms,tool_usage,created_at) VALUES(?,?,?,?,?,?,?,?,datetime('now'))",(route,provider,model,task_type,int(success),quality_score,latency_ms,','.join(tool_usage)))
 

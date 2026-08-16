@@ -1,5 +1,5 @@
 """ZEVORA Gateway Controller — the terminal never hosts AI chat."""
-import argparse, webbrowser
+import argparse, json, webbrowser
 from . import __version__
 from .banner import banner
 from .gateway import start, stop, restart, status
@@ -32,6 +32,15 @@ def open_localhost():
     print(f"Opening ZEVORA...\n{state['url']}"); webbrowser.open(state['url'])
 def doctor():
     bootstrap=Bootstrap(); print('ZEVORA Doctor'); bootstrap.environment(); bootstrap.quick_check(); print('[OK] Gateway controller ready')
+
+def intelligence_status():
+    from .commands.status import status as system_status
+    print(json.dumps(system_status(), indent=2, sort_keys=True))
+
+def uninstall_local(approved=False):
+    from agent.models.manager import LocalIntelligenceManager
+    result = LocalIntelligenceManager().uninstall_package(approved=approved)
+    print(json.dumps(result, indent=2, sort_keys=True))
 def controller():
     print(banner()); show_status()
     while True:
@@ -50,9 +59,9 @@ def controller():
 def main(argv=None):
     # Cheap/idempotent first-run preparation; dependency installation stays in bootstrap.py.
     Bootstrap(quiet=True).quick_check()
-    parser=argparse.ArgumentParser(add_help=False); parser.add_argument('command',nargs='?'); parser.add_argument('target',nargs='?'); parser.add_argument('--debug',action='store_true'); args=parser.parse_args(argv)
+    parser=argparse.ArgumentParser(add_help=False); parser.add_argument('command',nargs='?'); parser.add_argument('target',nargs='?'); parser.add_argument('--debug',action='store_true'); parser.add_argument('--approve',action='store_true'); args=parser.parse_args(argv)
     if args.target and args.target!='gateway': parser.error('Only the gateway target is supported')
-    commands={'start':lambda:launch(),'stop':lambda:print('[OK] Gateway stopped' if stop() else 'Gateway already stopped'),'restart':lambda:print(restart()),'background':lambda:launch(True),'open':open_localhost,'status':show_status,'doctor':doctor,'update':lambda:print('Safe update requires a configured Git remote. Run git pull only after reviewing changes.'),'version':lambda:print(f'ZEVORA\nZero-External Vendor Oriented Reasoning Agent\n\nVersion: {__version__}'),'help':lambda:print('zevora [start|stop|restart|background|open|status|doctor|update|version|help]')}
+    commands={'start':lambda:launch(),'stop':lambda:print('[OK] Gateway stopped' if stop() else 'Gateway already stopped'),'restart':lambda:print(restart()),'background':lambda:launch(True),'open':open_localhost,'status':show_status,'doctor':doctor,'intelligence':intelligence_status,'uninstall-local':lambda:uninstall_local(args.approve),'update':lambda:print('Verified component updates require a configured HTTPS manifest and SHA-256 hashes.'),'version':lambda:print(f'ZEVORA\nZero-External Vendor Oriented Reasoning Agent\n\nVersion: {__version__}'),'help':lambda:print('zevora [start|stop|restart|background|open|status|doctor|intelligence|uninstall-local [--approve]|update|version|help]')}
     if args.command is None: return controller()
     try: commands[args.command]()
     except KeyError: parser.error(f'Unknown controller command: {args.command}')

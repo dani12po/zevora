@@ -1,2 +1,4 @@
-"""ZEVORA — Zero-External Vendor Oriented Reasoning Agent."""
-__version__ = '0.1.0'
+"""ZEVORA - Zero-External Vendor Oriented Reasoning Agent."""
+from .version import __version__
+
+__all__ = ['__version__']

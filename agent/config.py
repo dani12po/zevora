@@ -27,20 +27,30 @@ class Settings(BaseSettings):
     anthropic_model: str = 'claude-3-5-haiku-latest'
     cloud_default_provider: str = 'openai'
 
-    # ── Local llama.cpp provider ─────────────────────────────────────────────
+    # ── Hybrid local intelligence (runtime-agnostic configuration) ───────────
     local_model_enabled: bool = True
+    local_provider_id: str = 'local'
     local_model_runtime: str = 'llamacpp'
+    local_endpoint_url: str = 'http://127.0.0.1:11434'
+    local_endpoint_api_key: str = ''
+    local_endpoint_timeout_seconds: int = 30
     local_model_path: str = 'models/zevora-4b-thinking.gguf'
     local_model_name: str = 'zevora'
+    local_model_package_path: str = 'data/models/zevora-local'
+    local_model_external_path: str = ''
+    local_model_registry_path: str = 'data/database/model_registry.db'
     local_model_context_length: int = 8192
     local_model_max_tokens: int = 1024
     local_model_threads: int = 0
     local_model_gpu_layers: int = 0
     local_model_temperature: float = .6
 
-    # ── Provider discovery ───────────────────────────────────────────────────
+    # ── Provider discovery and context economy ────────────────────────────────
     model_registry_ttl_hours: int = 24
     provider_timeout_seconds: int = 60
+    context_max_tokens: int = 12000
+    context_compression_enabled: bool = True
+    context_metrics_enabled: bool = True
 
     # ── Cache & memory ───────────────────────────────────────────────────────
     cache_enabled: bool = True
@@ -50,10 +60,14 @@ class Settings(BaseSettings):
     auto_background_tasks: bool = False
     database_path: str = 'data/database/agent.db'
 
-    # ── Skills ───────────────────────────────────────────────────────────────
+    # ── Skills and evolution ─────────────────────────────────────────────────
     basic_skills_enabled: bool = True
     basic_skills_dir: str = r'E:\SUPERAGENT-v3-OPENCLAW-HERMES\openclaw\skills'
     basic_skills_allowlist: str = 'm0,m1,m2,m3,m4,m5,m6,m7,m8,m9,m11,m12,x1,x2,x3'
+    skill_registry_path: str = 'data/database/skills.db'
+    evolution_enabled: bool = True
+    evolution_min_confidence: float = .80
+    evolution_require_verification: bool = True
 
     # ── Storage budgets ──────────────────────────────────────────────────────
     max_total_storage_gb: int = 30
@@ -74,6 +88,16 @@ class Settings(BaseSettings):
     max_archive_gb: int = 10
     max_embedding_gb: int = 5
 
+    # ── Collective learning and verified updates ─────────────────────────────
+    collective_learning_enabled: bool = False
+    collective_consent_skills: bool = False
+    collective_consent_knowledge: bool = False
+    collective_consent_routing: bool = False
+    collective_consent_evaluation: bool = False
+    collective_registry_url: str = ''
+    update_manifest_url: str = ''
+    update_channel: str = 'stable'
+
     # ── Routing and bounded agent execution ──────────────────────────────────
     routing_mode: str = 'AUTO'
     cloud_fallback: bool = True
@@ -91,6 +115,21 @@ class Settings(BaseSettings):
     @property
     def local_model_file(self) -> Path:
         configured = Path(self.local_model_path).expanduser()
+        return configured.resolve() if configured.is_absolute() else (ROOT / configured).resolve()
+
+    @property
+    def local_model_registry_file(self) -> Path:
+        configured = Path(self.local_model_registry_path).expanduser()
+        return configured.resolve() if configured.is_absolute() else (ROOT / configured).resolve()
+
+    @property
+    def local_model_package_dir(self) -> Path:
+        configured = Path(self.local_model_package_path).expanduser()
+        return configured.resolve() if configured.is_absolute() else (ROOT / configured).resolve()
+
+    @property
+    def skill_registry_file(self) -> Path:
+        configured = Path(self.skill_registry_path).expanduser()
         return configured.resolve() if configured.is_absolute() else (ROOT / configured).resolve()
 
     @property

@@ -657,12 +657,13 @@ async function saveProvider(p) {
 
 // ── VIEW: /local-ai ── Local Intelligence (memory, cache, experience) ─────────
 async function renderLocalAI() {
-  const [h, storage, mem, stats, intel] = await Promise.all([
+  const [h, storage, mem, stats, intel, evolution] = await Promise.all([
     api('/api/health'),
     api('/api/storage'),
     api('/api/memory'),
     api('/api/stats'),
     api('/api/intelligence').catch(() => ({})),
+    api('/api/evolution/status').catch(() => ({})),
   ]);
   const res = h.local_resource || {};
   const cats = mem.categories || {};
@@ -704,6 +705,17 @@ async function renderLocalAI() {
           const icons = {conversation:'💬', project:'📁', experience:'⭐', preferences:'⚙'};
           return `<div class="card card-sm"><div class="card-lbl">${icons[k]||'📌'} ${k}</div><div class="card-val">${v}</div></div>`;
         }).join('') || '<span style="color:var(--muted)">No memory entries yet.</span>'}
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:12px">
+      <b>Local model and evolution</b>
+      <div class="card-grid" style="margin-top:12px">
+        <div class="card-sm card"><div class="card-lbl">Runtime</div><div class="card-val" style="font-size:15px">${escapeHtml(evolution.local_intelligence?.runtime || 'unknown')}</div></div>
+        <div class="card-sm card"><div class="card-lbl">Installed packages</div><div class="card-val">${evolution.local_intelligence?.installed_packages?.length || 0}</div></div>
+        <div class="card-sm card"><div class="card-lbl">Registered skills</div><div class="card-val">${evolution.skills?.length || 0}</div></div>
+        <div class="card-sm card"><div class="card-lbl">Validated patterns</div><div class="card-val">${evolution.evolution?.validated_patterns || 0}</div></div>
+        <div class="card-sm card"><div class="card-lbl">Collective learning</div><div class="card-val" style="font-size:15px">${evolution.collective_learning?.enabled ? 'Enabled' : 'Disabled'}</div></div>
+        <div class="card-sm card"><div class="card-lbl">Update verification</div><div class="card-val" style="font-size:15px">${escapeHtml(evolution.updates?.verification || 'unknown')}</div></div>
       </div>
     </div>
     <div class="card">

@@ -26,7 +26,7 @@ def _model(provider, model_id):
             'instruction_score': .9, 'coding_score': .9, 'reasoning_score': .9,
         },
         'availability': 'verified', 'health_status': 'healthy',
-        'input_price': 0, 'output_price': 0,
+        'input_price': 0, 'output_price': 0, 'supports_tools': True,
     }
 
 

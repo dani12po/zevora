@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from agent.config import ROOT, reload_settings, settings
+from zevora.version import __version__
 from agent.memory.store import Store
 from agent.models.manager import LocalIntelligenceManager
 from agent.models.registry import ModelRegistry
@@ -31,8 +32,12 @@ from agent.core.planning import parse_action_plan, planning_system_prompt, publi
 from agent.core.project_index import format_project_context, index_project, project_context
 from agent.core.workspace import WorkspaceManager
 from agent.intelligence.engine import LocalIntelligenceEngine
+from agent.evolution.contribution import ContributionQueue
+from agent.evolution.engine import EvolutionEngine
 from agent.skills.openclaw import OpenClawSkillSource
+from agent.skills.registry import SkillRegistry
 from agent.storage.cleanup import CleanupManager
+from agent.storage.context_economy import build_context as build_economic_context
 from agent.storage.maintenance import MaintenanceScheduler
 from agent.storage.storage_manager import StorageManager
 from agent.tools.mcp_gateway import LocalMCPGateway
@@ -43,6 +48,9 @@ router        = ModelRouter()
 local_manager = LocalIntelligenceManager()
 intelligence_engine = LocalIntelligenceEngine(settings.database_file)
 basic_skills  = OpenClawSkillSource()
+skill_registry = SkillRegistry()
+evolution_engine = EvolutionEngine(store, skill_registry)
+contribution_queue = ContributionQueue(store)
 storage_manager   = StorageManager(ROOT)
 model_registry    = ModelRegistry(ROOT / 'data' / 'database' / 'model_registry.db')
 mcp_gateway       = LocalMCPGateway()
@@ -66,7 +74,7 @@ async def lifespan(_app):
 
 app = FastAPI(
     title='ZEVORA — Zero-External Vendor Oriented Reasoning Agent',
-    version='0.1.0',
+        version=__version__,
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -151,6 +159,8 @@ class ChatRequest(BaseModel):
     attachments: list[AttachmentRequest] = Field(default_factory=list, max_length=8)
     actions: list[AgentActionRequest] = Field(default_factory=list, max_length=30)
 class ChatRenameRequest(BaseModel): title: str = Field(min_length=1, max_length=120)
+class ApprovalRequest(BaseModel):
+    approved: bool = False
 class ProviderConfigRequest(BaseModel):
     provider: str = Field(min_length=1, max_length=80)
     api_key: str | None = Field(default=None, max_length=4096)
@@ -165,7 +175,7 @@ def dashboard():
     from fastapi.responses import FileResponse
     return FileResponse(ROOT / 'static' / 'index.html')
 @app.get('/health')
-def gateway_health(): return {'ok':True,'status':'ok','service':'zevora','version':'0.1.0','gateway':'running'}
+def gateway_health(): return {'ok':True,'status':'ok','service':'zevora','version':__version__,'gateway':'running'}
 def _schedule_shutdown():
     asyncio.get_running_loop().call_later(
         .2, lambda: os.kill(os.getpid(), __import__('signal').SIGINT)
@@ -188,7 +198,7 @@ async def health():
     configured = [p['provider'] for p in ProviderDiscovery(model_registry).configured_list()
                   if p['configured'] and p['enabled']]
     return {
-        'ok': True, 'status': 'ok', 'service': 'zevora', 'version': '0.1.0',
+        'ok': True, 'status': 'ok', 'service': 'zevora', 'version': __version__,
         'gateway': 'running', 'ready': True,
         'providers_configured': configured,
         'local_resource': resource,
@@ -206,6 +216,52 @@ def stats(): return {'today':store.usage(), 'resources':local_manager.resource_s
 def memory(): return {'categories':store.memory_categories()}
 @app.get('/api/intelligence')
 def intelligence_stats(): return intelligence_engine.stats(settings.database_file).__dict__
+
+@app.get('/api/evolution/status')
+def evolution_status():
+    skills = skill_registry.list()
+    return {
+        'version': __version__,
+        'local_intelligence': {
+            'runtime': settings.local_model_runtime,
+            'enabled': settings.local_model_enabled,
+            'package_directory': str(settings.local_model_package_dir),
+            'configured_model': settings.local_model_name,
+            'installed_packages': model_registry.installed_local_packages(),
+            'discovered_models': local_manager.discover_models(),
+            'installation_choices': local_manager.installation_choices(),
+        },
+        'skills': [{
+            'skill_id': item.skill_id,
+            'name': item.name,
+            'version': item.version,
+            'capabilities': list(item.capabilities),
+            'tool_requirements': list(item.tool_requirements),
+            'confidence': item.confidence,
+            'usage_count': item.usage_count,
+            'success_count': item.success_count,
+            'failure_count': item.failure_count,
+            'source': item.source,
+            'trust_state': item.trust_state,
+        } for item in skills],
+        'evolution': evolution_engine.status(),
+        'collective_learning': contribution_queue.status(),
+        'updates': {
+            'channel': settings.update_channel,
+            'manifest_configured': bool(settings.update_manifest_url),
+            'verification': 'sha256_required',
+            'activation': 'staged_atomic_with_rollback',
+        },
+    }
+
+@app.post('/api/local-intelligence/uninstall')
+def uninstall_local_intelligence(body: ApprovalRequest):
+    try:
+        return local_manager.uninstall_package(approved=body.approved)
+    except ValueError as error:
+        raise HTTPException(400, {
+            'code': 'UNINSTALL_PATH_REJECTED', 'message': str(error),
+        }) from error
 @app.get('/api/settings')
 def ui_settings():
     return {
@@ -640,7 +696,9 @@ def index(body: IndexRequest):
     }
 
 
-def _cloud_candidates(prompt: str, available_models: list[dict]) -> list:
+def _cloud_candidates(
+    prompt: str, available_models: list[dict], context_tokens: int = 0
+) -> list:
     """Build the hybrid provider/model fallback sequence.
 
     The legacy name is retained for planner and extension compatibility.
@@ -648,12 +706,18 @@ def _cloud_candidates(prompt: str, available_models: list[dict]) -> list:
     performance = store.routing_performance()
     if hasattr(hybrid_router, 'candidates'):
         candidates = hybrid_router.candidates(
-            prompt, available_models, performance=performance
+            prompt,
+            available_models,
+            performance=performance,
+            context_tokens=context_tokens,
         )
         return candidates if settings.cloud_fallback else candidates[:1]
 
     primary = hybrid_router.decide(
-        prompt, available_models, performance=performance
+        prompt,
+        available_models,
+        performance=performance,
+        context_tokens=context_tokens,
     )
     if primary.route not in {Route.LOCAL, Route.CLOUD}:
         return []
@@ -661,7 +725,7 @@ def _cloud_candidates(prompt: str, available_models: list[dict]) -> list:
     if settings.cloud_fallback:
         fallback = hybrid_router.decide(
             prompt, available_models, exclude_providers={primary.provider},
-            performance=performance,
+            performance=performance, context_tokens=context_tokens,
         )
         if fallback.route in {Route.LOCAL, Route.CLOUD}:
             candidates.append(fallback)
@@ -1051,6 +1115,12 @@ async def task(body: TaskRequest):
     routing_prompt = f'{prompt}\n[image attachment]' if images else prompt
     task_type = router.classify(routing_prompt)
     skill_context, skills_used = basic_skills.context_for(prompt)
+    dynamic_skill_context, dynamic_skills = skill_registry.context_for(
+        prompt, capabilities=set(task_type.value.split(',')), max_chars=8_000
+    )
+    if dynamic_skill_context:
+        skill_context = '\n\n'.join(filter(None, (skill_context, dynamic_skill_context)))
+        skills_used = list(dict.fromkeys([*skills_used, *dynamic_skills]))
 
     local_context = intelligence_engine.build_context(prompt, task_type.value, body.project, store)
     observation_context = ''
@@ -1063,7 +1133,11 @@ async def task(body: TaskRequest):
             local_context, project_reference, attachment_reference, observation_context
         ) if part
     ]
-    combined_context = '\n\n'.join(context_parts)
+    context_economy = build_economic_context(
+        context_parts,
+        max_tokens=settings.context_max_tokens,
+    )
+    combined_context = context_economy.text
     context_status = 'RETRIEVAL_ENRICHED' if combined_context else 'ROUTER_REQUIRED'
 
     system_prompt = body.system + (
@@ -1073,7 +1147,9 @@ async def task(body: TaskRequest):
 
     # Novel generation exhausts the router's local/cloud sequence through one provider contract.
     available_models = model_registry.list()
-    candidates = _cloud_candidates(routing_prompt, available_models)
+    candidates = _cloud_candidates(
+        routing_prompt, available_models, context_economy.compressed_tokens
+    )
     fallback_trace = []
     if not candidates:
         raise HTTPException(503, {
@@ -1129,7 +1205,12 @@ async def task(body: TaskRequest):
     response = redact(response)
     model = selected_model or cloud_defaults.get(provider_name, '')
     input_tokens, output_tokens = _usage_tokens(usage)
+    context_metrics = {
+        **context_economy.metrics(),
+        'provider_tokens': input_tokens,
+    }
     estimated_cost = _estimated_cost(selected_metadata, input_tokens, output_tokens)
+    quality = validate(response)['quality_score']
 
     intelligence_engine.extract_knowledge(prompt, response, task_type.value, provider_name, model, body.project)
 
@@ -1141,6 +1222,21 @@ async def task(body: TaskRequest):
     store.add_memory('conversation', prompt, body.project, task_type.value)
     elapsed = int((perf_counter() - started) * 1000)
     attempt_latency = int((perf_counter() - attempt_started) * 1000)
+    verified_outcome = bool(quality >= .5 and (not agent_trace or agent_trace.verified is not False))
+    store.add_context_metrics(task_type.value, provider_name, model, context_metrics)
+    compact_experience = {
+        'task_class': task_type.value,
+        'route': decision.route.value.lower(),
+        'result': 'success',
+        'provider': provider_name,
+        'model': model,
+        'skill_ids': skills_used,
+        'confidence': quality,
+        'execution_time_ms': elapsed,
+        'verified': verified_outcome,
+    }
+    store.add_structured_experience(compact_experience)
+    evolution_result = evolution_engine.observe(compact_experience, quality)
 
     with store.connection() as conn:
         conn.execute(
@@ -1153,7 +1249,6 @@ async def task(body: TaskRequest):
             (prompt, provider_name, model, 'success', elapsed, '{}'),
         )
 
-    quality = validate(response)['quality_score']
     store.add_routing_experience(
         decision.route.value, provider_name, model, ','.join(decision.task_type),
         True, quality, attempt_latency, decision.tools,
@@ -1176,7 +1271,9 @@ async def task(body: TaskRequest):
         'route': decision.route.value, 'reason': decision.reason,
         'tools': decision.tools, 'estimated_cost': estimated_cost,
         'quality_score': quality, 'cache_hit': False, 'execution_ms': elapsed,
-        'context_hash': context_hash, 'project_files': project_files_used,
+        'context_hash': context_hash, 'context_economy': context_metrics,
+        'evolution': evolution_result,
+        'project_files': project_files_used,
         'project_discovery': project_discovery,
         'context_status': context_status,
         'flow': _flow_status(

@@ -10,30 +10,35 @@ CHEAP = {
     'capabilities': ['general', 'coding', 'reasoning'],
     'capability_profile': {'instruction_score': .9, 'coding_score': .85, 'reasoning_score': .8},
     'availability': 'verified', 'health_status': 'healthy', 'input_price': .14,
+    'supports_tools': True,
 }
 EXPENSIVE = {
     'provider': 'openai', 'model_id': 'gpt-4o',
     'capabilities': ['general', 'coding', 'reasoning', 'vision'],
     'capability_profile': {'instruction_score': 1.0, 'coding_score': 1.0, 'reasoning_score': 1.0},
     'availability': 'verified', 'health_status': 'healthy', 'input_price': 5.0,
+    'supports_tools': True,
 }
 VISION_ONLY = {
     'provider': 'openai', 'model_id': 'gpt-4o-mini',
     'capabilities': ['general', 'vision'],
     'capability_profile': {'instruction_score': .8, 'coding_score': .5, 'reasoning_score': .5},
     'availability': 'verified', 'health_status': 'healthy', 'input_price': .15,
+    'supports_tools': False,
 }
 LOCAL = {
     'provider': 'local', 'model_id': 'zevora',
-    'capabilities': ['general', 'coding', 'reasoning', 'local', 'private'],
+    'capabilities': ['general', 'coding', 'reasoning', 'local', 'private', 'tool_use'],
     'capability_profile': {'instruction_score': .78, 'coding_score': .68, 'reasoning_score': .72},
     'availability': 'verified', 'health_status': 'healthy', 'input_price': 0,
+    'supports_tools': True, 'installed': True,
 }
 UNAVAILABLE = {
     'provider': 'anthropic', 'model_id': 'claude-3',
     'capabilities': ['general', 'reasoning'],
     'capability_profile': {'instruction_score': .9, 'coding_score': .7, 'reasoning_score': .9},
     'availability': 'verified', 'health_status': 'unavailable', 'input_price': 3.0,
+    'supports_tools': False,
 }
 
 
@@ -197,3 +202,34 @@ def test_immature_history_does_not_override_baseline_default(monkeypatch):
         'explain REST API', [CHEAP, preferred], performance=performance
     )
     assert result.provider == 'openai'
+
+
+def test_context_overflow_skips_model_and_uses_larger_window():
+    narrow = {**CHEAP, 'model_id': 'narrow', 'context_window': 32}
+    wide = {**EXPENSIVE, 'model_id': 'wide', 'context_window': 4096}
+    result = AdaptiveHybridRouter().decide(
+        'explain REST API', [narrow, wide], context_tokens=64
+    )
+    assert result.model_id == 'wide'
+    assert result.estimated_context_tokens >= 64
+
+
+def test_tool_task_requires_explicit_tool_support():
+    no_tools = {**CHEAP, 'model_id': 'no-tools', 'supports_tools': False}
+    result = AdaptiveHybridRouter().decide('run terminal command', [no_tools, LOCAL])
+    assert result.provider == 'local'
+    assert result.tools == ['terminal.execute']
+
+
+def test_uninstalled_local_package_is_not_routable():
+    uninstalled = {**LOCAL, 'model_id': 'not-installed', 'installed': False}
+    result = AdaptiveHybridRouter().decide('explain REST API', [uninstalled, CHEAP])
+    assert result.provider == 'deepseek'
+    assert result.route is Route.CLOUD
+
+
+def test_output_cost_is_included_in_decision_metadata():
+    model = {**CHEAP, 'output_price': 2.0, 'context_window': 2048}
+    result = AdaptiveHybridRouter().decide('explain REST API', [model])
+    assert result.estimated_cost is not None
+    assert result.estimated_cost > 0

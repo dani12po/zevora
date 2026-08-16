@@ -5,6 +5,8 @@ from .openai_compatible import OpenAICompatibleProvider
 from .gemini_provider import GeminiProvider
 from .anthropic_provider import AnthropicProvider
 from .local_provider import LocalProvider
+from .ollama_provider import OllamaLocalProvider
+from .local_endpoint_provider import LocalEndpointProvider
 
 
 def _provider_config() -> dict:
@@ -100,8 +102,15 @@ def _load_custom_providers() -> dict:
 
 def provider_factories() -> dict:
     """Return local, cloud, and custom provider factories."""
+    local_runtime = settings.local_model_runtime.lower().replace('_', '-')
+    local_factory = {
+        'llamacpp': lambda: LocalProvider(provider_policy('local')['default_model']),
+        'ollama': lambda: OllamaLocalProvider(provider_policy('local')['default_model']),
+        'openai-compatible': lambda: LocalEndpointProvider(provider_policy('local')['default_model']),
+        'openai-compatible-local': lambda: LocalEndpointProvider(provider_policy('local')['default_model']),
+    }.get(local_runtime, lambda: LocalProvider(provider_policy('local')['default_model']))
     built_in = {
-        'local': lambda: LocalProvider(provider_policy('local')['default_model']),
+        'local': local_factory,
         'openai': lambda: OpenAICompatibleProvider(
             'openai', settings.openai_api_key, settings.openai_base_url,
             provider_policy('openai')['default_model'], provider_policy('openai')['supports_vision']
