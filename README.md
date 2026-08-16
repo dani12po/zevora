@@ -69,6 +69,46 @@ API keys are **never** stored in the database, logs, or shown in the UI.
 
 See [INSTALL.md](INSTALL.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
 
+## Custom AI Providers
+
+The Providers page can register user-controlled OpenAI-compatible,
+Anthropic-compatible, generic HTTP REST, local OpenAI-compatible, and custom
+runtime providers. Standard providers need a base URL, model, and optional
+credential environment name. They enter the same registry, discovery, router,
+quality, and fallback path as built-in providers.
+
+Paste a Python, Node.js, TypeScript, shell, or cURL example into the provider
+source editor and select **Analyze**. Static analysis extracts recognized URLs,
+models, credential references, request options, headers, and protocol metadata
+without executing the source. Dynamic authentication or custom SDK logic is
+classified as a custom runtime instead of being silently executed.
+
+Provider manifests store credential references, never credential values. Values
+are resolved only when a request executes and public API responses and exports
+contain configuration status plus a masked suffix. Custom headers may reference
+only the manifest's declared credential using `${CREDENTIAL_NAME}`.
+
+Custom runtime scripts execute in a temporary process with JSON-lines IPC,
+bounded time, output, disk, and concurrency. They do not receive the workspace
+or inherited environment. A one-time test requires explicit approval; normal
+routing requires the provider to be explicitly trusted. Process isolation is a
+restricted execution boundary, not a full virtual machine or container sandbox.
+
+Useful CLI operations include:
+
+```powershell
+zevora provider list
+zevora provider add --id my-provider --name "My Provider" --protocol openai-compatible --base-url https://api.example.test/v1 --model example-model
+zevora provider import provider.json
+zevora provider test my-provider
+zevora provider runtime-test my-runtime --approve
+zevora provider export my-provider --output provider.export.json
+```
+
+The equivalent management API is available under `/api/provider-manifests`.
+The dashboard's Analyze action handles source inspection, while runtime trust is
+performed through the dashboard confirmation flow or the API trust endpoint.
+
 ## Local And Cloud Inference
 
 `Zevora Local AI` is the product identity presented by ZEVORA around the

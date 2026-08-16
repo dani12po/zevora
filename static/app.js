@@ -424,9 +424,11 @@ async function send(replay = null) {
     userMessage = appendMessage('user', content, {attachments:request.attachments}); $('prompt').value = '';
     $('route-status').textContent = request.actions.length ? 'Step 2 of 3 · Running approved actions' : 'Generating response';
     waiting = appendMessage('assistant', request.actions.length ? 'Working in the selected project…' : 'Preparing a response…');
+    const mode=$('routing-override')?.value||'auto';
+    const provider=$('routing-provider')?.value||null, model=$('routing-model')?.value||null;
     const data = await api('/api/chat', {method:'POST', body:JSON.stringify({
       message: content, conversation_id: activeChat,
-      project_id: projectId, mode: 'auto',
+      project_id: projectId, mode, provider, model,
       attachments: request.attachments, actions: request.actions,
     })});
     activeChat = data.conversation_id; waiting.remove();
@@ -466,8 +468,17 @@ async function approvePendingActions(event) {
 }
 
 // ── VIEW: / (Chat) ────────────────────────────────────────────────────────────
+async function refreshRoutingSelectors() {
+  const mode=$('routing-override'); if(!mode)return;
+  const models=await api('/api/models').catch(()=>[]);
+  const providers=[...new Set(models.map(item=>item.provider))];
+  $('routing-provider').innerHTML=providers.map(item=>`<option value="${escapeHtml(item)}">${escapeHtml(item)}</option>`).join('');
+  const syncModels=()=>{const selected=$('routing-provider').value;$('routing-model').innerHTML=models.filter(item=>item.provider===selected).map(item=>`<option value="${escapeHtml(item.model_id)}">${escapeHtml(item.model_id)}</option>`).join('');};
+  $('routing-provider').onchange=syncModels; syncModels();
+  mode.onchange=()=>{const explicit=mode.value==='provider'||mode.value==='model';$('routing-provider').classList.toggle('hidden',!explicit);$('routing-model').classList.toggle('hidden',mode.value!=='model');}; mode.onchange();
+}
 function renderChat() {
-  $('composer').classList.remove('hidden');
+  $('composer').classList.remove('hidden'); refreshRoutingSelectors();
   $('chat-title').textContent = activeChat ? 'Chat' : 'What are you building?';
   if (!activeChat) {
     $('messages').innerHTML = `<div class="empty"><b>ZEVORA</b>
@@ -560,8 +571,9 @@ async function openChatFromVault(id) {
 
 // ── VIEW: /providers ──────────────────────────────────────────────────────────
 async function renderProviders() {
-  const [providerStatus, providerConfig, models] = await Promise.all([
-    api('/api/providers'), api('/api/providers/config'), api('/api/models')
+  const [providerStatus, providerConfig, models, manifests] = await Promise.all([
+    api('/api/providers'), api('/api/providers/config'), api('/api/models'),
+    api('/api/provider-manifests').catch(() => ({providers:[], runtime_availability:{}}))
   ]);
   const modelCounts = {}; models.forEach(m => { modelCounts[m.provider] = (modelCounts[m.provider] || 0) + 1; });
   const statusMap = {}; providerStatus.forEach(p => { statusMap[p.provider] = p.health_status; });
@@ -638,8 +650,74 @@ async function renderProviders() {
   } else {
     providerConfig.forEach(p => { cards += buildCard(p); });
   }
-  setPanel('Providers', pageWrap('<h2>Providers</h2>', cards));
+  const customRows = (manifests.providers || []).map(p => `<div class="custom-provider-row">
+    <div><b>${escapeHtml(p.name)}</b> ${badge(p.state, p.state === 'HEALTHY' || p.state === 'TRUSTED_RUNTIME' ? 'green' : 'grey')}
+      <p>${escapeHtml(p.protocol)} · ${escapeHtml(p.default_model || 'model unresolved')} · ${p.credential.configured ? escapeHtml(p.credential.masked) : 'credential not set'}</p></div>
+    <div class="provider-actions">
+      <button class="btn-sm" onclick="testCustomProvider('${p.provider_id}',${p.protocol === 'custom-runtime'})">Test</button>
+      <button class="btn-sm" onclick="exportCustomProvider('${p.provider_id}')">Export</button>
+      ${p.protocol === 'custom-runtime' && !p.runtime?.trusted ? `<button class="btn-sm" onclick="trustCustomProvider('${p.provider_id}')">Trust</button>` : ''}
+      <button class="btn-sm danger" onclick="removeCustomProvider('${p.provider_id}')">Delete</button>
+    </div></div>`).join('') || '<p class="muted-copy">No user-defined providers.</p>';
+  const customPanel = `<section class="provider-manager">
+    <div class="panel-toolbar"><div><h3>Bring your own AI</h3><p>Configure a compatible endpoint or statically inspect an example script.</p></div></div>
+    <div class="provider-form-grid">
+      <label>ID<input id="custom-provider-id" placeholder="my-provider"></label>
+      <label>Name<input id="custom-provider-name" placeholder="My Provider"></label>
+      <label>Protocol<select id="custom-provider-protocol"><option>openai-compatible</option><option>anthropic-compatible</option><option>http-rest</option><option>local-openai-compatible</option><option>custom-runtime</option><option>unknown</option></select></label>
+      <label>Base URL<input id="custom-provider-url" placeholder="https://api.example.com/v1"></label>
+      <label>Default model<input id="custom-provider-model" placeholder="model-id"></label>
+      <label>Credential environment<input id="custom-provider-env" placeholder="MY_PROVIDER_API_KEY"></label>
+      <label>Credential value<input id="custom-provider-key" type="password" autocomplete="new-password" placeholder="Stored locally"></label>
+      <label>Runtime language<select id="custom-provider-runtime"><option value="python">Python</option><option value="node">Node</option><option value="typescript">TypeScript</option><option value="shell">Shell</option></select></label>
+    </div>
+    <label class="provider-source-label">Example or runtime source<textarea id="custom-provider-source" rows="8" placeholder="Paste Python, Node, TypeScript, Shell, or cURL source"></textarea></label>
+    <div class="provider-actions"><button class="btn-sm" onclick="analyzeProviderSource()">Analyze</button><button class="btn-sm" onclick="importProviderJson()">Import JSON</button><button class="btn-sm" onclick="saveCustomProvider()">Save provider</button></div>
+    <pre id="provider-analysis" class="analysis-preview hidden"></pre>
+    <div class="custom-provider-list">${customRows}</div>
+  </section>`;
+  setPanel('Providers', pageWrap('<h2>Providers</h2>', customPanel + cards));
 }
+
+async function analyzeProviderSource() {
+  const source=$('custom-provider-source').value.trim(); if(!source) return;
+  const result=await api('/api/provider-manifests/analyze',{method:'POST',body:JSON.stringify({source,language:'auto'})});
+  const a=result.analysis; $('provider-analysis').textContent=JSON.stringify(a,null,2); $('provider-analysis').classList.remove('hidden');
+  if(a.protocol && a.protocol!=='unknown') $('custom-provider-protocol').value=a.protocol;
+  if(a.base_url) $('custom-provider-url').value=a.base_url;
+  if(a.model) $('custom-provider-model').value=a.model;
+  if(a.credential_env) $('custom-provider-env').value=a.credential_env;
+  if(a.language && ['python','node','typescript','shell'].includes(a.language)) $('custom-provider-runtime').value=a.language;
+}
+function customProviderPayload() {
+  const protocol=$('custom-provider-protocol').value, runtime=protocol==='custom-runtime';
+  const language=$('custom-provider-runtime').value;
+  return {provider_id:$('custom-provider-id').value.trim().toLowerCase(),name:$('custom-provider-name').value.trim(),protocol,
+    base_url:$('custom-provider-url').value.trim(),default_model:$('custom-provider-model').value.trim(),
+    credential:{source:'environment',name:$('custom-provider-env').value.trim().toUpperCase()},enabled:true,routing_priority:50,
+    capabilities:{chat:true,streaming:null,reasoning:null,vision:null,tool_calling:null},
+    runtime:runtime?{runtime:language,entrypoint:language==='python'?'provider.py':language==='shell'?'provider.sh':'provider.js',trusted:false,
+      permissions:{network:true,filesystem:'temporary',workspace:false,allowed_hosts:[]}}:null};
+}
+async function saveCustomProvider() {
+  const manifest=customProviderPayload(), source=$('custom-provider-source').value;
+  await api('/api/provider-manifests',{method:'POST',body:JSON.stringify({manifest,credential_value:$('custom-provider-key').value||null,script:manifest.runtime?source:null})});
+  await renderProviders();
+}
+async function importProviderJson() {
+  const source=$('custom-provider-source').value.trim();
+  let manifest; try{manifest=JSON.parse(source);}catch(_){alert('Paste a valid provider manifest JSON document.');return;}
+  await api('/api/provider-manifests/import',{method:'POST',body:JSON.stringify({manifest,credential_value:$('custom-provider-key').value||null})});
+  await renderProviders();
+}
+async function testCustomProvider(id,isRuntime) {
+  const approved=!isRuntime||confirm('Run this provider script once with its declared credential and permissions?'); if(!approved)return;
+  const path=isRuntime?`/api/provider-manifests/${id}/runtime-test`:`/api/provider-manifests/${id}/test`;
+  const result=await api(path,{method:'POST',body:JSON.stringify({runtime_approved:isRuntime})}); alert(result.result?.success?'Connection succeeded':result.result?.message||'Connection failed'); await renderProviders();
+}
+async function trustCustomProvider(id) { if(!confirm('Trust this runtime for future provider requests?'))return; await api(`/api/provider-manifests/${id}/trust`,{method:'POST',body:JSON.stringify({approved:true})}); await renderProviders(); }
+async function removeCustomProvider(id) { if(!confirm(`Delete provider ${id} and its stored runtime source?`))return; await api(`/api/provider-manifests/${id}`,{method:'DELETE'}); await renderProviders(); }
+async function exportCustomProvider(id) { const data=await api(`/api/provider-manifests/${id}/export`); const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}); const link=document.createElement('a'); link.href=URL.createObjectURL(blob); link.download=`${id}.provider.json`; link.click(); URL.revokeObjectURL(link.href); }
 
 function toggleKeyEdit(p) { $(`key-edit-${p}`).style.display='grid'; $(`key-display-${p}`).closest('.provider-field').style.display='none'; markProviderDirty(p); }
 function cancelKeyEdit(p) { $(`key-edit-${p}`).style.display='none'; $(`key-display-${p}`).closest('.provider-field').style.display='grid'; }

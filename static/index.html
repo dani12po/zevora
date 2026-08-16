@@ -166,6 +166,9 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
         </button>
         <button id="add-action" class="tool-btn" type="button" title="Add a structured action">Action</button>
+        <select id="routing-override" class="routing-select" aria-label="Routing mode" title="Routing mode"><option value="auto">Auto</option><option value="local">Local</option><option value="provider">Provider</option><option value="model">Model</option></select>
+        <select id="routing-provider" class="routing-select hidden" aria-label="Provider"></select>
+        <select id="routing-model" class="routing-select hidden" aria-label="Model"></select>
         <input id="file-input" type="file" multiple hidden
           accept=".txt,.md,.json,.csv,.log,.py,.js,.ts,.tsx,.jsx,.html,.css,.pdf,image/png,image/jpeg,image/gif,image/webp">
         <span id="route-status" role="status" aria-live="polite" class="route-status">Ready</span>

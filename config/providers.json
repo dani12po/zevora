@@ -16,7 +16,7 @@
       }
     },
     "openai": {
-      "enabled": true,
+      "enabled": false,
       "routing_priority": 90,
       "supports_vision": true,
       "default_model": "orcarouter/free"
@@ -46,11 +46,13 @@
       "supports_vision": false
     },
     "nvidia": {
-      "enabled": true,
+      "enabled": false,
       "routing_priority": 90,
       "default_model": "z-ai/glm-5.2",
-      "supports_vision": true
+      "supports_vision": false
     }
   },
-  "model_overrides": {}
+  "model_overrides": {},
+  "custom_providers": [],
+  "provider_schema_version": 2
 }

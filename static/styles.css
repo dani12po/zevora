@@ -342,6 +342,17 @@ menu button[value="default"]:hover{background:var(--accent-hover)}
 .key-display{font-family:monospace;font-size:12px;color:var(--text2);padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);letter-spacing:.06em}
 .provider-save{display:flex;align-items:center;gap:8px;justify-content:flex-end;margin-top:6px}
 .save-msg{font-size:11px;color:var(--accent);opacity:0;transition:opacity .3s}
+.provider-manager{margin-bottom:16px;border-block:1px solid var(--border);background:var(--surface);padding:0 16px 16px}
+.provider-form-grid{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:10px;margin:14px 0}
+.provider-form-grid label,.provider-source-label{display:grid;gap:5px;color:var(--text2);font-size:11px;min-width:0}
+.provider-form-grid input,.provider-form-grid select{min-width:0;width:100%;font-size:12px}
+.provider-source-label textarea{width:100%;min-height:150px;max-height:360px;resize:vertical;font:11px/1.5 'Cascadia Code',Consolas,monospace}
+.provider-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;flex-wrap:wrap}
+.custom-provider-list{display:grid;gap:0;margin-top:14px;border-top:1px solid var(--border)}
+.custom-provider-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--border)}
+.custom-provider-row p{margin-top:4px;color:var(--text2);font-size:11px;overflow-wrap:anywhere}
+.analysis-preview{max-height:260px;overflow:auto;margin:12px 0 0;padding:10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere}
+.routing-select{width:auto;max-width:180px;height:28px;padding:3px 24px 3px 7px;font-size:11px}
 .save-msg.show{opacity:1}
 /* ── Filesystem tree ─────────────────────────────────────────────────────── */
 .fs-layout{display:grid;grid-template-columns:240px 1fr;gap:0;background:var(--border);border-radius:var(--radius);overflow:hidden;border:1px solid var(--border);height:calc(100dvh - 80px)}
@@ -473,9 +484,14 @@ menu button[value="default"]:hover{background:var(--accent-hover)}
   .docs-toc{position:static;grid-template-columns:1fr 1fr}
   .settings-row{grid-template-columns:1fr}
   .provider-field{grid-template-columns:1fr}
+  .provider-form-grid{grid-template-columns:1fr 1fr}
+  .custom-provider-row{grid-template-columns:1fr}
+  .custom-provider-row .provider-actions{justify-content:flex-start}
+  .routing-select{max-width:120px}
 }
 @media (max-width:390px){
   .metrics-grid{grid-template-columns:1fr}
+  .provider-form-grid{grid-template-columns:1fr}
   .metric-card{min-height:72px}
 }
 @media (prefers-reduced-motion:reduce){

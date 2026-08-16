@@ -20,6 +20,7 @@ from agent.models.registry import ModelRegistry
 from agent.providers.discovery import ProviderDiscovery
 from agent.providers.local_provider import local_runtime_status
 from agent.providers.registry import get_provider
+from agent.providers.service import ProviderService
 from agent.routing.hybrid_router import AdaptiveHybridRouter, Route
 from agent.routing.model_selector import ModelSelector
 from agent.routing.quality_gate import validate
@@ -53,6 +54,7 @@ evolution_engine = EvolutionEngine(store, skill_registry)
 contribution_queue = ContributionQueue(store)
 storage_manager   = StorageManager(ROOT)
 model_registry    = ModelRegistry(ROOT / 'data' / 'database' / 'model_registry.db')
+provider_service  = ProviderService()
 mcp_gateway       = LocalMCPGateway()
 hybrid_router     = AdaptiveHybridRouter()
 workspace_manager = WorkspaceManager(ROOT / 'data' / 'database' / 'workspace.db')
@@ -129,6 +131,9 @@ class TaskRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=20000)
     project: str | None = None
     system: str = 'You are a safe, concise personal AI agent.'
+    mode: str = Field(default='auto', max_length=32)
+    provider: str | None = Field(default=None, max_length=80)
+    model: str | None = Field(default=None, max_length=255)
     actions: list[AgentActionRequest] = Field(default_factory=list, max_length=30)
     attachments: list[AttachmentRequest] = Field(default_factory=list, max_length=8)
 class PlanRequest(BaseModel):
@@ -148,6 +153,9 @@ class SettingsUpdateRequest(BaseModel):
 class ChatCreateRequest(BaseModel): title: str = 'New chat'; project_id: int | None = None
 class ChatMessageRequest(BaseModel):
     content: str = Field(min_length=1,max_length=20000)
+    mode: str = Field(default='auto', max_length=32)
+    provider: str | None = Field(default=None, max_length=80)
+    model: str | None = Field(default=None, max_length=255)
     attachments: list[AttachmentRequest] = Field(default_factory=list, max_length=8)
     actions: list[AgentActionRequest] = Field(default_factory=list, max_length=30)
 class ChatRequest(BaseModel):
@@ -155,7 +163,9 @@ class ChatRequest(BaseModel):
     conversation_id: str | None = None
     project_id: int | None = None
     project_context: str | None = None
-    mode: str = 'auto'
+    mode: str = Field(default='auto', max_length=32)
+    provider: str | None = Field(default=None, max_length=80)
+    model: str | None = Field(default=None, max_length=255)
     attachments: list[AttachmentRequest] = Field(default_factory=list, max_length=8)
     actions: list[AgentActionRequest] = Field(default_factory=list, max_length=30)
 class ChatRenameRequest(BaseModel): title: str = Field(min_length=1, max_length=120)
@@ -169,6 +179,21 @@ class ProviderConfigRequest(BaseModel):
     enabled: bool | None = None
     routing_priority: int | None = Field(default=None, ge=0, le=100)
     supports_vision: bool | None = None
+class ProviderManifestRequest(BaseModel):
+    manifest: dict
+    credential_value: str | None = Field(default=None, max_length=4096)
+    script: str | None = Field(default=None, max_length=524288)
+class ProviderAnalysisRequest(BaseModel):
+    source: str = Field(min_length=1, max_length=524288)
+    language: str = Field(default='auto', max_length=32)
+class ProviderTestRequest(BaseModel):
+    runtime_approved: bool = False
+class ProviderTrustRequest(BaseModel):
+    approved: bool = False
+class ProviderEnabledRequest(BaseModel):
+    enabled: bool
+class ProviderExampleRequest(BaseModel):
+    language: str = Field(default='python', max_length=32)
 
 @app.get('/')
 def dashboard():
@@ -473,6 +498,148 @@ async def update_provider_config(body: ProviderConfigRequest):
         'models_discovered': refresh[0]['models_discovered'] if refresh else 0,
     }
 
+def _provider_service_error(error: Exception) -> HTTPException:
+    if isinstance(error, KeyError):
+        return HTTPException(404, {
+            'code': 'PROVIDER_NOT_FOUND', 'message': 'Provider was not found.',
+        })
+    if isinstance(error, PermissionError):
+        return HTTPException(403, {
+            'code': 'PROVIDER_RUNTIME_APPROVAL_REQUIRED', 'message': redact(str(error)),
+        })
+    return HTTPException(400, {
+        'code': 'PROVIDER_CONFIGURATION_INVALID', 'message': redact(str(error)),
+    })
+
+
+@app.get('/api/provider-manifests')
+def provider_manifests():
+    return {
+        'providers': provider_service.list(),
+        'runtime_availability': provider_service.runtime_availability(),
+    }
+
+
+@app.get('/api/provider-manifests/{provider_id}')
+def provider_manifest(provider_id: str):
+    try:
+        return provider_service.get(provider_id)
+    except (KeyError, ValueError) as error:
+        raise _provider_service_error(error) from error
+
+
+@app.post('/api/provider-manifests')
+async def save_provider_manifest(body: ProviderManifestRequest):
+    try:
+        saved = provider_service.save(
+            body.manifest, credential_value=body.credential_value, script=body.script,
+        )
+        refresh = await ProviderDiscovery(model_registry).refresh(saved['provider_id'])
+        return {'ok': True, 'provider': saved, 'discovery': refresh}
+    except (KeyError, PermissionError, TypeError, ValueError) as error:
+        raise _provider_service_error(error) from error
+
+
+@app.post('/api/provider-manifests/import')
+async def import_provider_manifest(body: ProviderManifestRequest):
+    try:
+        saved = provider_service.import_manifest(
+            body.manifest, credential_value=body.credential_value, script=body.script,
+        )
+        refresh = await ProviderDiscovery(model_registry).refresh(saved['provider_id'])
+        return {'ok': True, 'provider': saved, 'discovery': refresh}
+    except (json.JSONDecodeError, KeyError, PermissionError, TypeError, ValueError) as error:
+        raise _provider_service_error(error) from error
+
+
+@app.post('/api/provider-manifests/analyze')
+def analyze_provider_script(body: ProviderAnalysisRequest):
+    try:
+        return {'ok': True, 'analysis': provider_service.analyze(body.source, body.language)}
+    except ValueError as error:
+        raise _provider_service_error(error) from error
+
+
+@app.post('/api/provider-manifests/{provider_id}/test')
+async def test_provider_manifest(provider_id: str, body: ProviderTestRequest):
+    try:
+        result = await provider_service.test(
+            provider_id, runtime_approved=body.runtime_approved,
+        )
+        return {'ok': bool(result.get('success')), 'result': result}
+    except (KeyError, PermissionError, ValueError) as error:
+        raise _provider_service_error(error) from error
+
+
+@app.post('/api/provider-manifests/{provider_id}/runtime-test')
+async def test_provider_runtime(provider_id: str, body: ProviderTestRequest):
+    if not body.runtime_approved:
+        raise HTTPException(403, {
+            'code': 'PROVIDER_RUNTIME_APPROVAL_REQUIRED',
+            'message': 'Explicit one-time runtime approval is required.',
+        })
+    try:
+        result = await provider_service.test(provider_id, runtime_approved=True)
+        return {'ok': bool(result.get('success')), 'result': result}
+    except (KeyError, PermissionError, ValueError) as error:
+        raise _provider_service_error(error) from error
+
+
+@app.post('/api/provider-manifests/{provider_id}/trust')
+def trust_provider_runtime(provider_id: str, body: ProviderTrustRequest):
+    try:
+        return {'ok': True, 'provider': provider_service.trust_runtime(
+            provider_id, approved=body.approved,
+        )}
+    except (KeyError, PermissionError, ValueError) as error:
+        raise _provider_service_error(error) from error
+
+
+@app.post('/api/provider-manifests/{provider_id}/enabled')
+def enable_provider_manifest(provider_id: str, body: ProviderEnabledRequest):
+    try:
+        return {'ok': True, 'provider': provider_service.set_enabled(provider_id, body.enabled)}
+    except (KeyError, ValueError) as error:
+        raise _provider_service_error(error) from error
+
+
+@app.post('/api/provider-manifests/{provider_id}/models/refresh')
+async def refresh_provider_models(provider_id: str):
+    try:
+        result = await provider_service.refresh_models(provider_id)
+        await ProviderDiscovery(model_registry).refresh(provider_id)
+        return {'ok': True, **result}
+    except (KeyError, PermissionError, ValueError) as error:
+        raise _provider_service_error(error) from error
+
+
+@app.post('/api/provider-manifests/{provider_id}/example')
+def generate_provider_example(provider_id: str, body: ProviderExampleRequest):
+    try:
+        return {'ok': True, **provider_service.generate_example(provider_id, body.language)}
+    except (KeyError, ValueError) as error:
+        raise _provider_service_error(error) from error
+
+
+@app.get('/api/provider-manifests/{provider_id}/export')
+def export_provider_manifest(provider_id: str):
+    try:
+        return provider_service.export_manifest(provider_id)
+    except KeyError as error:
+        raise _provider_service_error(error) from error
+
+
+@app.delete('/api/provider-manifests/{provider_id}')
+def delete_provider_manifest(provider_id: str):
+    try:
+        removed = provider_service.remove(provider_id)
+    except ValueError as error:
+        raise _provider_service_error(error) from error
+    if not removed:
+        raise _provider_service_error(KeyError(provider_id))
+    return {'ok': True, 'provider_id': provider_id}
+
+
 @app.get('/api/usage/history')
 def usage_history(provider: str | None = None, days: int = 30):
     """Per-day, per-provider breakdown from usage_events table."""
@@ -654,6 +821,7 @@ async def chat_message(chat_id:str,body:ChatMessageRequest):
     project=workspace_manager.get(chat['project_id']) if chat['project_id'] else None
     result=await task(TaskRequest(
         prompt=body.content, project=project['path'] if project else None,
+        mode=body.mode, provider=body.provider, model=body.model,
         attachments=body.attachments, actions=body.actions,
     ))
     metadata={key:result.get(key) for key in (
@@ -680,7 +848,8 @@ async def chat(body:ChatRequest):
     if existing['title']=='New chat': workspace_manager.set_title(chat_id,body.message[:80])
     result=await chat_message(
         chat_id, ChatMessageRequest(
-            content=body.message, attachments=body.attachments, actions=body.actions,
+            content=body.message, mode=body.mode, provider=body.provider, model=body.model,
+            attachments=body.attachments, actions=body.actions,
         )
     )
     return {'ok':True,**result,'conversation_id':chat_id,'request_id':request_id}
@@ -957,6 +1126,23 @@ def _model_metadata(models: list[dict], provider: str | None, model_id: str | No
 async def task(body: TaskRequest):
     started = perf_counter()
     prompt = redact(body.prompt)
+    mode = body.mode.strip().lower()
+    if mode not in {'auto', 'local', 'provider', 'model'}:
+        raise HTTPException(400, {
+            'code': 'INVALID_ROUTING_OVERRIDE',
+            'message': 'mode must be auto, local, provider, or model',
+        })
+    requested_provider = body.provider.strip().lower() if body.provider else None
+    requested_model = body.model.strip() if body.model else None
+    if mode == 'provider' and not requested_provider:
+        raise HTTPException(400, {
+            'code': 'INVALID_ROUTING_OVERRIDE', 'message': 'provider mode requires provider',
+        })
+    if mode == 'model' and (not requested_provider or not requested_model):
+        raise HTTPException(400, {
+            'code': 'INVALID_ROUTING_OVERRIDE',
+            'message': 'model mode requires both provider and model',
+        })
     try:
         processed_attachments = [
             process_attachment(item.name, item.media_type, item.data_base64)
@@ -1087,8 +1273,8 @@ async def task(body: TaskRequest):
                 }
 
     context_hash = Store.key(project_hash, attachment_hash) if attachment_hash else project_hash
-    # Action-bearing requests are never replayed through the response cache.
-    cached = None if body.actions else store.get_cache(prompt, context_hash)
+    # Action-bearing and explicitly routed requests are never replayed through Auto cache entries.
+    cached = None if body.actions or mode != 'auto' else store.get_cache(prompt, context_hash)
     if cached:
         with store.connection() as conn:
             conn.execute(
@@ -1145,8 +1331,21 @@ async def task(body: TaskRequest):
         'Never bypass the agent permission system.\n' + skill_context if skill_context else ''
     ) + (f"\n\nContext:\n{combined_context}" if combined_context else "")
 
-    # Novel generation exhausts the router's local/cloud sequence through one provider contract.
+    # Explicit selection narrows the same capability-aware router pool; it never bypasses routing checks.
     available_models = model_registry.list()
+    if mode == 'local':
+        available_models = [item for item in available_models if item.get('provider') == 'local']
+    elif mode in {'provider', 'model'}:
+        available_models = [
+            item for item in available_models
+            if item.get('provider') == requested_provider
+            and (mode != 'model' or item.get('model_id') == requested_model)
+        ]
+    if mode != 'auto' and not available_models:
+        raise HTTPException(400, {
+            'code': 'ROUTING_OVERRIDE_UNAVAILABLE',
+            'message': 'The selected provider or model is not available in the model registry.',
+        })
     candidates = _cloud_candidates(
         routing_prompt, available_models, context_economy.compressed_tokens
     )
@@ -1214,7 +1413,7 @@ async def task(body: TaskRequest):
 
     intelligence_engine.extract_knowledge(prompt, response, task_type.value, provider_name, model, body.project)
 
-    if not body.actions:
+    if not body.actions and mode == 'auto':
         store.put_cache(
             prompt, response, provider_name, model, task_type.value,
             body.project, context_hash=context_hash,

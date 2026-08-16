@@ -1,6 +1,8 @@
 import json
-from pathlib import Path
 from ..config import settings, ROOT
+from .configuration import ProviderStore
+from .credentials import CredentialResolver
+from .manifest_provider import ManifestProvider
 from .openai_compatible import OpenAICompatibleProvider
 from .gemini_provider import GeminiProvider
 from .anthropic_provider import AnthropicProvider
@@ -33,69 +35,38 @@ def provider_policy(name: str) -> dict:
     config = _provider_config()
     normalized = name.lower()
     policy = config.get('providers', {}).get(normalized, {})
-    custom = next(
-        (item for item in config.get('custom_providers', []) if item.get('name', '').lower() == normalized),
-        {},
-    )
+    custom = next((item for item in ProviderStore().list() if item.provider_id == normalized), None)
     return {
-        'enabled': bool(policy.get('enabled', True)),
-        'routing_priority': int(policy.get('routing_priority', 50)),
+        'enabled': bool(policy.get('enabled', custom.enabled if custom else True)),
+        'routing_priority': int(policy.get('routing_priority', custom.routing_priority if custom else 50)),
         'default_model': str(
-            policy.get('default_model') or custom.get('default_model') or _built_in_default_model(normalized)
+            policy.get('default_model') or (custom.default_model if custom else '')
+            or _built_in_default_model(normalized)
         ).strip(),
-        'supports_vision': bool(policy.get('supports_vision', custom.get('supports_vision', False))),
-        'runtime': str(policy.get('runtime', '')).strip(),
+        'supports_vision': (
+            policy.get('supports_vision') if 'supports_vision' in policy
+            else (custom.capabilities.get('vision') if custom else False)
+        ),
+        'runtime': str(policy.get('runtime', custom.runtime.runtime if custom and custom.runtime else '')).strip(),
+        'protocol': custom.protocol if custom else ('local' if normalized == 'local' else 'builtin'),
+        'state': custom.state if custom else ('CONFIGURED' if policy else 'UNCONFIGURED'),
         'model_path': str(policy.get('model_path', '')).strip(),
-        'context_length': policy.get('context_length'),
+        'context_length': policy.get('context_length', custom.context_length if custom else None),
         'max_output_tokens': policy.get('max_output_tokens'),
         'capability_profile': policy.get('capability_profile', {}),
+        'capabilities': dict(custom.capabilities) if custom else {},
+        'credential_source': custom.credential.source if custom else 'environment',
+        'credential_name': custom.credential.name if custom else '',
     }
 
 
-def _local_env() -> dict[str, str]:
-    values: dict[str, str] = {}
-    try:
-        lines = (ROOT / '.env').read_text(encoding='utf-8').splitlines()
-    except OSError:
-        return values
-    for line in lines:
-        stripped = line.strip()
-        if stripped and not stripped.startswith('#') and '=' in stripped:
-            key, _, value = stripped.partition('=')
-            values[key.strip().upper()] = value.strip()
-    return values
-
-
 def _load_custom_providers() -> dict:
-    """Load user-defined OpenAI-compatible providers from config/providers.json.
-
-    Custom providers are defined under the ``custom_providers`` key::
-
-        {
-          "custom_providers": [
-            {
-              "name": "my-proxy",
-              "base_url": "https://my-proxy.example.com/v1",
-              "api_key_env": "MY_PROXY_API_KEY",
-              "default_model": "gpt-4o"
-            }
-          ]
-        }
-    """
-    customs = _provider_config().get('custom_providers', [])
+    """Load provider-agnostic user manifests without resolving credentials early."""
     factories: dict = {}
-    env_values = _local_env()
-    for entry in customs:
-        name = entry.get('name', '').strip().lower()
-        base_url = entry.get('base_url', '').strip()
-        api_key_env = entry.get('api_key_env', '').strip()
-        default_model = entry.get('default_model', '').strip()
-        supports_vision = bool(entry.get('supports_vision', False))
-        if not name or not base_url:
-            continue
-        api_key = env_values.get(api_key_env.upper(), '') if api_key_env else ''
-        factories[name] = lambda n=name, k=api_key, u=base_url, m=default_model, v=supports_vision: (
-            OpenAICompatibleProvider(n, k, u, m, v)
+    resolver = CredentialResolver()
+    for manifest in ProviderStore().list():
+        factories[manifest.provider_id] = (
+            lambda item=manifest, credentials=resolver: ManifestProvider(item, credentials)
         )
     return factories
 
@@ -136,7 +107,7 @@ def provider_factories() -> dict:
             provider_policy('gemini')['supports_vision'],
         ),
     }
-    # Merge custom providers — user-defined names take precedence
+    # User manifests are normal router candidates and may override built-in IDs explicitly.
     built_in.update(_load_custom_providers())
     return built_in
 

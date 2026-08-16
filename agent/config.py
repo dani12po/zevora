@@ -45,9 +45,13 @@ class Settings(BaseSettings):
     local_model_gpu_layers: int = 0
     local_model_temperature: float = .6
 
-    # ── Provider discovery and context economy ────────────────────────────────
+    # ── Provider discovery, custom runtimes, and context economy ─────────────
     model_registry_ttl_hours: int = 24
     provider_timeout_seconds: int = 60
+    custom_runtime_max_concurrency: int = 2
+    custom_runtime_timeout_seconds: int = 120
+    custom_runtime_max_output_mb: int = 10
+    custom_runtime_max_temp_mb: int = 100
     context_max_tokens: int = 12000
     context_compression_enabled: bool = True
     context_metrics_enabled: bool = True
