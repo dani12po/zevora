@@ -3,7 +3,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ZEVORA · AI Coding Workspace</title>
-<link rel="stylesheet" href="/static/styles.css?v=20260812-4">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css?v=20260816-1">
 </head>
 <body>
 <div class="app">
@@ -42,7 +45,7 @@
       <select id="project-select" aria-label="Current project">
         <option value="">No folder selected</option>
       </select>
-      <button class="icon-action" id="open-folder-btn" title="Open folder" onclick="$('project-dialog').showModal()">
+      <button class="icon-action" id="open-folder-btn" type="button" title="Open folder">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
       </button>
     </div>
@@ -277,6 +280,6 @@
   </form>
 </dialog>
 
-<script src="/static/app.js?v=20260812-4"></script>
+<script type="module" src="/static/app.js?v=20260816-1"></script>
 </body>
 </html>

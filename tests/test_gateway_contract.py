@@ -257,23 +257,76 @@ def test_usage_cost_uses_input_and_output_prices():
 
 def test_static_chat_guidance_and_docs_contract():
     root = Path(__file__).resolve().parents[1]
-    html = (root / 'static' / 'index.html').read_text(encoding='utf-8')
-    javascript = (root / 'static' / 'app.js').read_text(encoding='utf-8')
-    css = (root / 'static' / 'styles.css').read_text(encoding='utf-8')
+    static = root / 'static'
+    html = (static / 'index.html').read_text(encoding='utf-8')
+    javascript = '\n'.join(path.read_text(encoding='utf-8') for path in static.glob('*.js'))
+    app_javascript = (static / 'app.js').read_text(encoding='utf-8')
+    css = (static / 'styles.css').read_text(encoding='utf-8')
 
     assert 'id="nav-docs"' in html
-    assert 'function fallbackTraceHtml' in javascript
     assert 'Local Intelligence had no exact answer' in javascript
     assert 'href="/docs"' in html
     assert 'id="workspace-access"' in html
     assert 'id="composer-open-project"' in html
-    assert re.search(r"'/docs':\s*renderDocs", javascript)
-    assert 'function renderDocs()' in javascript
+    assert re.search(r"'/docs':\s*renderDocs", app_javascript)
+    assert 'export function renderDocs()' in javascript
     assert "meta.error ? ' message-error'" in javascript
-    assert "err.code === 'PROJECT_REQUIRED'" in javascript
+    assert re.search(r"error\.code\s*===\s*'PROJECT_REQUIRED'", javascript)
     assert '.workspace-access' in css
     assert '.docs-layout' in css
     assert '.message-error' in css
+
+
+def test_static_frontend_module_and_theme_contract():
+    root = Path(__file__).resolve().parents[1]
+    static = root / 'static'
+    required_modules = {
+        'app.js', 'core.js', 'chat.js', 'chats.js', 'docs.js', 'providers.js',
+        'local-ai.js', 'model-router.js', 'mcp.js', 'terminal.js', 'filesystem.js',
+        'memory.js', 'cache.js', 'usage.js', 'settings.js',
+    }
+    module_paths = {path.name: path for path in static.glob('*.js')}
+    assert required_modules <= module_paths.keys()
+    assert all(len(path.read_text(encoding='utf-8').splitlines()) <= 300 for path in module_paths.values())
+
+    html = (static / 'index.html').read_text(encoding='utf-8')
+    app_javascript = (static / 'app.js').read_text(encoding='utf-8')
+    css = (static / 'styles.css').read_text(encoding='utf-8')
+    assert re.search(r'<script\s+type="module"\s+src="/static/app\.js', html)
+    assert 'family=Inter' in html and 'family=JetBrains+Mono' in html
+    assert 'onclick=' not in html
+
+    routes = {
+        '/': 'renderChat', '/chats': 'renderChatVault', '/docs': 'renderDocs',
+        '/providers': 'renderProviders', '/local-ai': 'renderLocalAI',
+        '/model-router': 'renderModelRouter', '/mcp': 'renderMCP',
+        '/terminal': 'renderTerminal', '/filesystem': 'renderFilesystem',
+        '/memory': 'renderMemory', '/cache': 'renderCache', '/usage': 'renderUsage',
+        '/settings': 'renderSettings',
+    }
+    for route, renderer in routes.items():
+        assert re.search(rf"'{re.escape(route)}':\s*{renderer}", app_javascript)
+
+    tokens = {
+        '--bg': '#151718', '--surface': '#1b1e20', '--surface2': '#222628',
+        '--surface3': '#2a2f31', '--border': '#373d3f', '--border2': '#4a5254',
+        '--text': '#edf0ed', '--text2': '#adb3b0', '--text3': '#7d8582',
+        '--accent': '#b9825a', '--accent-hover': '#c9956d', '--purple': '#9b8fa8',
+        '--red': '#c87368', '--yellow': '#c5a15b', '--blue': '#7896aa',
+        '--cyan': '#70a3a0', '--green': '#829b82', '--radius': '6px',
+        '--radius-sm': '4px',
+    }
+    masters = [
+        (root / 'design-system' / 'zevora-workspace' / 'MASTER.md').read_text(encoding='utf-8'),
+        (root / 'design-system' / 'hybrid-ai-agent' / 'MASTER.md').read_text(encoding='utf-8'),
+    ]
+    for token, value in tokens.items():
+        assert re.search(rf'{re.escape(token)}\s*:\s*{re.escape(value)}', css)
+        assert all(f'`{token}`' in master and f'`{value}`' in master for master in masters)
+    assert "--font-body:Inter" in css and "--font-mono:'JetBrains Mono'" in css
+    assert '.route-enter{animation:route-enter 160ms ease-out both}' in css
+    assert '.state-indicator-local' in css and '.state-indicator-cloud' in css
+    assert '*::-webkit-scrollbar-thumb' in css
 
 
 def test_provider_config_exposes_local_runtime_without_api_key():
