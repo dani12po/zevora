@@ -88,11 +88,13 @@ are resolved only when a request executes and public API responses and exports
 contain configuration status plus a masked suffix. Custom headers may reference
 only the manifest's declared credential using `${CREDENTIAL_NAME}`.
 
-Custom runtime scripts execute in a temporary process with JSON-lines IPC,
-bounded time, output, disk, and concurrency. They do not receive the workspace
-or inherited environment. A one-time test requires explicit approval; normal
-routing requires the provider to be explicitly trusted. Process isolation is a
-restricted execution boundary, not a full virtual machine or container sandbox.
+Custom runtime scripts execute in a temporary working directory and a separate
+process with JSON-lines IPC, bounded time, output, temporary disk, and
+concurrency. They do not receive the workspace path or inherited environment.
+A one-time test requires explicit approval; normal routing requires the provider
+to be explicitly trusted, and changing its source revokes that trust. This is
+not an OS sandbox: approved code retains the host process user's filesystem and
+network privileges, so only review and trust code from known sources.
 
 Useful CLI operations include:
 

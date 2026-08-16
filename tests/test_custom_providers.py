@@ -134,6 +134,45 @@ def test_script_analyzer_is_static_and_classifies_dynamic_python():
     assert dynamic.requires_runtime is True
 
 
+def test_script_analyzer_redacts_sensitive_header_by_name():
+    secret = "short-literal-secret"
+    analysis = ScriptAnalyzer().analyze(
+        "import requests\n"
+        f"requests.post('https://example.test', headers={{'X-API-Key': '{secret}'}})\n",
+        "python",
+    )
+
+    assert analysis.headers == {"X-API-Key": "[REDACTED]"}
+    assert secret not in str(analysis.to_dict())
+
+
+def test_manifest_rejects_literal_secrets_in_exported_metadata(tmp_path):
+    store = ProviderStore(tmp_path / "providers.json", tmp_path / "runtime")
+    with pytest.raises(ValueError, match="credential placeholder"):
+        store.save(openai_manifest(headers={"Authorization": "Bearer literal-secret-value"}))
+
+    with pytest.raises(ValueError, match="credential metadata"):
+        store.save(runtime_manifest(environment={"API_TOKEN": "literal-secret-value"}))
+
+
+def test_runtime_source_change_revokes_persisted_trust(tmp_path):
+    store = ProviderStore(tmp_path / "providers.json", tmp_path / "runtime")
+    trusted = runtime_manifest(trusted=True)
+    store.save(trusted, 'print({"type": "result", "content": "old"})\n')
+
+    saved = store.save(
+        trusted, 'print({"type": "result", "content": "changed"})\n'
+    )
+
+    assert saved.runtime is not None and saved.runtime.trusted is False
+    persisted = store.get(trusted.provider_id)
+    assert persisted is not None and persisted.runtime is not None
+    assert persisted.runtime.trusted is False
+    manager = CustomRuntimeManager(store, CredentialResolver(runtime_values={"RUNTIME_KEY": "secret"}))
+    with pytest.raises(PermissionError, match="approval"):
+        asyncio.run(manager.execute(persisted, {"type": "chat"}))
+
+
 def test_manifest_provider_uses_injected_runtime_store(tmp_path):
     store = ProviderStore(tmp_path / "providers.json", tmp_path / "runtime")
     manifest = runtime_manifest()
@@ -141,6 +180,23 @@ def test_manifest_provider_uses_injected_runtime_store(tmp_path):
     manager = CustomRuntimeManager(store, CredentialResolver(runtime_values={"RUNTIME_KEY": "secret"}))
     provider = ManifestProvider(manifest, manager.resolver, manager)
     assert provider.configured() is True
+
+
+def test_manifest_provider_health_failure_is_logged(tmp_path, caplog, monkeypatch):
+    store = ProviderStore(tmp_path / "providers.json", tmp_path / "runtime")
+    manifest = runtime_manifest(trusted=True)
+    store.save(manifest, 'print({"type": "result", "content": "ok"})\n')
+    manager = CustomRuntimeManager(store, CredentialResolver(runtime_values={"RUNTIME_KEY": "secret"}))
+
+    async def fail(*_args, **_kwargs):
+        raise RuntimeError("sensitive provider detail")
+
+    monkeypatch.setattr(manager, "execute", fail)
+    provider = ManifestProvider(manifest, manager.resolver, manager)
+
+    assert asyncio.run(provider.health_check()) is False
+    assert "Provider health check failed for runtime-provider: RuntimeError" in caplog.text
+    assert "sensitive provider detail" not in caplog.text
 
 
 def test_custom_runtime_requires_approval_and_returns_structured_events(tmp_path):
@@ -166,7 +222,7 @@ def test_custom_runtime_requires_approval_and_returns_structured_events(tmp_path
     assert [event["type"] for event in result.events] == ["status", "text_delta", "usage", "done"]
 
 
-def test_custom_runtime_redacts_credential_from_events(tmp_path):
+def test_custom_runtime_redacts_credential_from_events_and_errors(tmp_path):
     store = ProviderStore(tmp_path / "providers.json", tmp_path / "runtime")
     manifest = runtime_manifest()
     secret = "runtime-secret-value"
@@ -179,3 +235,12 @@ def test_custom_runtime_redacts_credential_from_events(tmp_path):
     result = asyncio.run(manager.execute(manifest, {"type": "chat"}, approved=True))
     assert result.text == "[REDACTED]"
     assert secret not in result.safe_log
+
+    store.save(
+        manifest,
+        "import json, os\n"
+        "print(json.dumps({'type': 'error', 'message': os.environ['RUNTIME_KEY']}))\n",
+    )
+    with pytest.raises(Exception) as caught:
+        asyncio.run(manager.execute(manifest, {"type": "chat"}, approved=True))
+    assert secret not in str(caught.value)

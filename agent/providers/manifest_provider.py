@@ -1,6 +1,7 @@
 """Provider-agnostic HTTP and custom-runtime adapters."""
 from __future__ import annotations
 
+import logging
 from time import perf_counter
 from typing import Any
 
@@ -15,6 +16,9 @@ from .errors import (
     map_http_error, raise_for_response,
 )
 from .runtime import CustomRuntimeManager
+
+
+logger = logging.getLogger(__name__)
 
 
 class ManifestProvider(AIProvider):
@@ -61,7 +65,8 @@ class ManifestProvider(AIProvider):
                 response = await client.get(f"{self.manifest.base_url.rstrip('/')}{path}", headers=headers)
                 raise_for_response(self.name, response)
             return True
-        except Exception:
+        except Exception as error:
+            logger.warning("Provider health check failed for %s: %s", self.name, type(error).__name__)
             return False
 
     async def test_connection(self, *, approved: bool = False) -> dict[str, Any]:

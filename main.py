@@ -7,7 +7,8 @@ from threading import Lock
 from time import perf_counter
 import asyncio
 import uuid
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -89,6 +90,22 @@ app.add_middleware(
 )
 app.mount('/static', StaticFiles(directory=ROOT / 'static'), name='static')
 
+@app.exception_handler(RequestValidationError)
+async def api_validation_error(_: Request, error: RequestValidationError):
+    details = [
+        {key: value for key, value in item.items() if key not in {'ctx', 'input'}}
+        for item in error.errors()
+    ]
+    return JSONResponse(status_code=422, content={
+        'ok': False,
+        'error': {
+            'code': 'VALIDATION_ERROR',
+            'message': 'Request validation failed.',
+            'details': details,
+        },
+    })
+
+
 @app.exception_handler(HTTPException)
 async def api_http_error(_: Request, error: HTTPException):
     """Return machine-readable failures without affecting the gateway process."""
@@ -119,7 +136,7 @@ async def api_unexpected_error(_: Request, error: Exception):
 class AttachmentRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     media_type: str = Field(min_length=1, max_length=100)
-    data_base64: str = Field(min_length=1)
+    data_base64: str = Field(min_length=1, max_length=14_000_000)
 
 class AgentActionRequest(BaseModel):
     tool: str = Field(min_length=1, max_length=80)
@@ -129,8 +146,10 @@ class AgentActionRequest(BaseModel):
 
 class TaskRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=20000)
-    project: str | None = None
-    system: str = 'You are a safe, concise personal AI agent.'
+    project: str | None = Field(default=None, max_length=4096)
+    system: str = Field(
+        default='You are a safe, concise personal AI agent.', max_length=20_000
+    )
     mode: str = Field(default='auto', max_length=32)
     provider: str | None = Field(default=None, max_length=80)
     model: str | None = Field(default=None, max_length=255)
@@ -138,19 +157,23 @@ class TaskRequest(BaseModel):
     attachments: list[AttachmentRequest] = Field(default_factory=list, max_length=8)
 class PlanRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=20000)
-    project_id: int
+    project_id: int = Field(gt=0)
 class MCPToolUpdateRequest(BaseModel):
     enabled: bool
-class IndexRequest(BaseModel): path: str
+class IndexRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=4096)
 class ProjectCreateRequest(BaseModel):
     name: str = Field(min_length=1,max_length=120)
     approved: bool = False
-class ProjectLoadRequest(BaseModel): path: str
+class ProjectLoadRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=4096)
 class SettingsUpdateRequest(BaseModel):
     routing_mode: str | None = None
     cloud_fallback: bool | None = None
     cost_optimization: bool | None = None
-class ChatCreateRequest(BaseModel): title: str = 'New chat'; project_id: int | None = None
+class ChatCreateRequest(BaseModel):
+    title: str = Field(default='New chat', min_length=1, max_length=120)
+    project_id: int | None = Field(default=None, gt=0)
 class ChatMessageRequest(BaseModel):
     content: str = Field(min_length=1,max_length=20000)
     mode: str = Field(default='auto', max_length=32)
@@ -160,9 +183,9 @@ class ChatMessageRequest(BaseModel):
     actions: list[AgentActionRequest] = Field(default_factory=list, max_length=30)
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1,max_length=20000)
-    conversation_id: str | None = None
-    project_id: int | None = None
-    project_context: str | None = None
+    conversation_id: str | None = Field(default=None, max_length=128)
+    project_id: int | None = Field(default=None, gt=0)
+    project_context: str | None = Field(default=None, max_length=20_000)
     mode: str = Field(default='auto', max_length=32)
     provider: str | None = Field(default=None, max_length=80)
     model: str | None = Field(default=None, max_length=255)
@@ -305,8 +328,14 @@ def update_ui_settings(body:SettingsUpdateRequest):
     if body.routing_mode is not None: saved['routing_mode']=body.routing_mode.upper()
     if body.cloud_fallback is not None: saved['cloud_fallback']=body.cloud_fallback
     if body.cost_optimization is not None: saved['cost_optimization']=body.cost_optimization
-    config_file.write_text(json.dumps(saved,indent=2),encoding='utf-8')
-    reload_settings()
+    try:
+        _atomic_write_text(config_file, json.dumps(saved, indent=2) + '\n')
+        reload_settings()
+    except OSError as error:
+        raise HTTPException(500, {
+            'code': 'SETTINGS_WRITE_FAILED',
+            'message': f'Unable to persist settings: {type(error).__name__}',
+        }) from error
     return {'ok':True,**saved}
 @app.get('/api/storage')
 def storage(): return storage_manager.report()
@@ -641,7 +670,10 @@ def delete_provider_manifest(provider_id: str):
 
 
 @app.get('/api/usage/history')
-def usage_history(provider: str | None = None, days: int = 30):
+def usage_history(
+    provider: str | None = Query(default=None, max_length=80),
+    days: int = Query(default=30, ge=1, le=365),
+):
     """Per-day, per-provider breakdown from usage_events table."""
     with store.connection() as conn:
         sql = '''SELECT date(created_at) day, provider, model,
@@ -651,7 +683,7 @@ def usage_history(provider: str | None = None, days: int = 30):
                     COALESCE(SUM(estimated_cost),0) estimated_cost
                  FROM usage_events
                  WHERE date(created_at) >= date('now', ?)'''
-        args: list = [f'-{max(1,min(days,365))} days']
+        args: list = [f'-{days} days']
         if provider:
             sql += ' AND provider=?'; args.append(provider)
         sql += ' GROUP BY day, provider, model ORDER BY day DESC, provider'
@@ -682,7 +714,10 @@ def filesystem_tree(project_id: int):
         return nodes
     return {'project': project['path'], 'tree': _tree('')}
 @app.get('/api/filesystem/file')
-def filesystem_file(project_id: int, path: str):
+def filesystem_file(
+    project_id: int = Query(gt=0),
+    path: str = Query(min_length=1, max_length=4096),
+):
     """Read a single project file for preview (max 200 KB)."""
     _, gateway = project_gateway(project_id)
     try:
@@ -704,7 +739,7 @@ def models(provider: str | None = None): return model_registry.list(provider)
 @app.post('/api/models/refresh')
 async def refresh_models(provider: str | None = None): return await ProviderDiscovery(model_registry).refresh(provider)
 @app.get('/api/route')
-def route(prompt: str):
+def route(prompt: str = Query(min_length=1, max_length=20_000)):
     return hybrid_router.decide(prompt, model_registry.list()).to_dict()
 @app.get('/api/tools')
 def tools(): return mcp_gateway.tools()
@@ -737,7 +772,10 @@ def workspace_projects(): return workspace_manager.projects()
 @app.post('/api/projects/load')
 def load_workspace_project(body:ProjectLoadRequest):
     try: return workspace_manager.load(body.path)
-    except ValueError as error: raise HTTPException(400,str(error))
+    except (OSError, ValueError) as error:
+        raise HTTPException(400, {
+            'code': 'PROJECT_PATH_INVALID', 'message': str(error),
+        }) from error
 @app.post('/api/projects/pick-folder')
 def pick_workspace_folder():
     """Local-only native fallback when the browser folder-picker API is unavailable."""
@@ -768,7 +806,10 @@ def project_files(project_id:int):
     if not result.ok: raise HTTPException(400,result.output)
     return {'project':project['path'],'entries':result.output}
 @app.get('/api/projects/{project_id}/files/read')
-def project_file(project_id:int,path:str):
+def project_file(
+    project_id: int,
+    path: str = Query(min_length=1, max_length=4096),
+):
     _,gateway=project_gateway(project_id)
     try: result=gateway.execute('read_file',{'path':path})
     except (OSError,ValueError) as error: raise HTTPException(400,str(error))
@@ -779,21 +820,29 @@ def audit_workspace_project(project_id:int):
     try: return workspace_manager.audit(project_id)
     except ValueError as error: raise HTTPException(404,str(error))
 @app.get('/api/chats')
-def chats(limit: int = 100, query: str | None = None):
+def chats(
+    limit: int = Query(default=100, ge=1, le=500),
+    query: str | None = Query(default=None, max_length=120),
+):
     with workspace_manager.connection() as conn:
         if query:
             rows = conn.execute(
                 'SELECT * FROM chats WHERE title LIKE ? ORDER BY updated_at DESC LIMIT ?',
-                (f'%{query}%', min(limit, 500))
+                (f'%{query}%', limit)
             ).fetchall()
         else:
             rows = conn.execute(
                 'SELECT * FROM chats ORDER BY updated_at DESC LIMIT ?',
-                (min(limit, 500),)
+                (limit,)
             ).fetchall()
     return [dict(r) for r in rows]
 @app.post('/api/chats')
-def create_chat(body:ChatCreateRequest): return workspace_manager.create_chat(body.title,body.project_id)
+def create_chat(body:ChatCreateRequest):
+    if body.project_id is not None and not workspace_manager.get(body.project_id):
+        raise HTTPException(404, {
+            'code': 'PROJECT_NOT_FOUND', 'message': 'Selected project was not found.',
+        })
+    return workspace_manager.create_chat(body.title,body.project_id)
 @app.get('/api/chats/{chat_id}')
 def get_chat(chat_id:str):
     chat=workspace_manager.get_chat(chat_id)
@@ -856,7 +905,19 @@ async def chat(body:ChatRequest):
 @app.post('/api/index')
 def index(body: IndexRequest):
     root = Path(body.path).resolve()
-    if not root.is_dir(): raise HTTPException(400, 'Project directory not found')
+    registered = next((
+        project for project in workspace_manager.projects()
+        if Path(project['path']).resolve() == root
+    ), None)
+    if not registered:
+        raise HTTPException(403, {
+            'code': 'PROJECT_NOT_REGISTERED',
+            'message': 'Load the project into the workspace before indexing it.',
+        })
+    if not root.is_dir():
+        raise HTTPException(400, {
+            'code': 'PROJECT_PATH_INVALID', 'message': 'Project directory not found.',
+        })
     context = project_context(root, '')
     store.replace_project_files(str(root), context['rows'])
     return {

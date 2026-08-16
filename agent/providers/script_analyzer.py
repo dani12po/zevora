@@ -127,7 +127,10 @@ class PythonScriptAnalyzer:
             if "headers" in kwargs or "default_headers" in kwargs:
                 resolved = self._resolve(kwargs.get("headers") or kwargs.get("default_headers"), values)
                 if isinstance(resolved, dict):
-                    headers = {str(k): self._safe_header(str(v)) for k, v in resolved.items()}
+                    headers = {
+                        str(key): self._safe_header(str(key), str(value))
+                        for key, value in resolved.items()
+                    }
             if not credential:
                 for key in ("api_key", "token", "auth_token"):
                     if key in kwargs:
@@ -205,8 +208,11 @@ class PythonScriptAnalyzer:
         return ""
 
     @staticmethod
-    def _safe_header(value: str) -> str:
-        if re.search(r"(?i)(bearer\s+[A-Za-z0-9._-]{8,}|sk-[A-Za-z0-9_-]{8,})", value):
+    def _safe_header(name: str, value: str) -> str:
+        if re.search(
+            r"(?i)(?:authorization|proxy-authorization|x-api-key|api-key|x-auth-token)",
+            name,
+        ) or re.search(r"(?i)(bearer\s+\S+|sk-[A-Za-z0-9_-]{8,})", value):
             return "[REDACTED]"
         return value
 

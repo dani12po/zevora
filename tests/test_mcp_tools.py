@@ -120,6 +120,15 @@ def test_command_risk_policy_requires_approval_or_rejects(tmp_path):
     assert not chained.ok
 
 
+def test_command_policy_rejects_arbitrary_python_modules(tmp_path):
+    gateway = LocalMCPGateway(tmp_path)
+
+    result = gateway.execute('execute_command', {'command': 'python -m http.server'}, approved=True)
+
+    assert not result.ok
+    assert 'allowlist' in str(result.output).lower()
+
+
 def test_legacy_tool_config_is_migrated_on_read(tmp_path):
     config_path = tmp_path / 'mcp.json'
     config_path.write_text(json.dumps({

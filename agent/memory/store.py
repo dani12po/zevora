@@ -88,12 +88,16 @@ class Store:
             conn.execute(
                 "INSERT OR REPLACE INTO schema_meta(key,value) VALUES('store_schema_version','2')"
             )
-            for column, definition in [('last_accessed','TEXT'),('size_bytes','INTEGER DEFAULT 0'),('hit_count','INTEGER DEFAULT 0')]:
-                try: conn.execute(f'ALTER TABLE exact_cache ADD COLUMN {column} {definition}')
-                except sqlite3.OperationalError: pass
-            for column, definition in [('content_hash','TEXT'),('size_bytes','INTEGER DEFAULT 0'),('search_text','TEXT')]:
-                try: conn.execute(f'ALTER TABLE project_files ADD COLUMN {column} {definition}')
-                except sqlite3.OperationalError: pass
+            for table, columns in (
+                ('exact_cache', [('last_accessed','TEXT'),('size_bytes','INTEGER DEFAULT 0'),('hit_count','INTEGER DEFAULT 0')]),
+                ('project_files', [('content_hash','TEXT'),('size_bytes','INTEGER DEFAULT 0'),('search_text','TEXT')]),
+            ):
+                existing = {
+                    row['name'] for row in conn.execute(f'PRAGMA table_info({table})').fetchall()
+                }
+                for column, definition in columns:
+                    if column not in existing:
+                        conn.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
 
     @staticmethod
     def key(prompt: str, context_hash: str = '') -> str:

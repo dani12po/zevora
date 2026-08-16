@@ -97,6 +97,19 @@ def test_no_models_returns_unavailable():
     assert result.route is Route.UNAVAILABLE
 
 
+def test_all_models_rejected_for_context_or_tools_returns_unavailable():
+    narrow = {**CHEAP, 'model_id': 'narrow', 'context_window': 16}
+    no_tools = {**CHEAP, 'model_id': 'no-tools', 'supports_tools': False}
+
+    oversized = AdaptiveHybridRouter().decide('explain REST API', [narrow], context_tokens=64)
+    unsupported = AdaptiveHybridRouter().decide('run terminal command', [no_tools])
+
+    assert oversized.route is Route.UNAVAILABLE
+    assert oversized.reason == 'NO_CAPABLE_MODEL'
+    assert unsupported.route is Route.UNAVAILABLE
+    assert unsupported.tools == ['terminal.execute']
+
+
 def test_excluded_provider_routes_to_next_candidate(monkeypatch):
     monkeypatch.setattr(
         'agent.routing.hybrid_router.provider_policy',

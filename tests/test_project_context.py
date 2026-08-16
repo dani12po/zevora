@@ -1,3 +1,8 @@
+import os
+
+import pytest
+
+import agent.core.project_index as project_index_module
 from agent.core.project_index import format_project_context, index_project, project_context
 from agent.memory.store import Store
 
@@ -100,3 +105,62 @@ def test_project_discovery_is_always_in_provider_context(tmp_path):
     assert 'src/page.tsx' in context['discovery']['file_tree']
     assert 'Project discovery' in formatted
     assert 'Package manager: npm' in formatted
+
+
+def test_incremental_index_does_not_hash_or_read_unchanged_files(tmp_path, monkeypatch):
+    root = tmp_path / 'demo'
+    root.mkdir()
+    source = root / 'app.py'
+    source.write_text('VALUE = 1\n', encoding='utf-8')
+    first = index_project(root)
+
+    def unexpected_file_read(*_args, **_kwargs):
+        raise AssertionError('unchanged file content must not be opened')
+
+    monkeypatch.setattr(project_index_module, '_digest', unexpected_file_read)
+    monkeypatch.setattr(project_index_module, '_search_text', unexpected_file_read)
+    second = index_project(root, prior_rows=first)
+
+    assert second[0]['content_hash'] == first[0]['content_hash']
+    assert second[0]['search_text'] == first[0]['search_text']
+
+
+def test_incremental_index_rehashes_only_changed_files_and_drops_deleted(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / 'demo'
+    root.mkdir()
+    changed = root / 'changed.py'
+    unchanged = root / 'unchanged.py'
+    deleted = root / 'deleted.py'
+    changed.write_text('VALUE = 1\n', encoding='utf-8')
+    unchanged.write_text('STABLE = True\n', encoding='utf-8')
+    deleted.write_text('REMOVE = True\n', encoding='utf-8')
+    first = index_project(root)
+    changed.write_text('VALUE = 200\n', encoding='utf-8')
+    deleted.unlink()
+
+    digested = []
+    original_digest = project_index_module._digest
+
+    def record_digest(path):
+        digested.append(path.name)
+        return original_digest(path)
+
+    monkeypatch.setattr(project_index_module, '_digest', record_digest)
+    second = index_project(root, prior_rows=first)
+
+    assert digested == ['changed.py']
+    assert [row['path'] for row in second] == ['changed.py', 'unchanged.py']
+    assert second[0]['content_hash'] != first[0]['content_hash']
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Windows symlink creation needs elevated privilege')
+def test_index_skips_symlink_targets_outside_project(tmp_path):
+    root = tmp_path / 'demo'
+    root.mkdir()
+    outside = tmp_path / 'outside.txt'
+    outside.write_text('secret', encoding='utf-8')
+    (root / 'escape.txt').symlink_to(outside)
+
+    assert index_project(root) == []

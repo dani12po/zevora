@@ -249,6 +249,64 @@ def test_filesystem_endpoint_blocks_path_escape(tmp_path, monkeypatch):
     assert 'outside' not in str(response.json()).lower() or 'secret' not in str(response.json())
 
 
+def test_request_validation_errors_use_gateway_json_contract():
+    client = TestClient(main.app)
+
+    responses = [
+        client.get('/api/chats', params={'limit': 0}),
+        client.get('/api/usage/history', params={'days': 366}),
+        client.get('/api/route', params={'prompt': 'x' * 20_001}),
+        client.get('/api/filesystem/file', params={'project_id': 1, 'path': ''}),
+        client.post('/api/chat', json={'message': 'x' * 20_001}),
+    ]
+
+    for response in responses:
+        assert response.status_code == 422
+        assert response.json()['ok'] is False
+        assert response.json()['error']['code'] == 'VALIDATION_ERROR'
+        assert 'input' not in str(response.json()['error']['details'])
+
+
+def test_index_endpoint_requires_registered_workspace(tmp_path, monkeypatch):
+    manager = WorkspaceManager(tmp_path / 'workspace.db')
+    project_root = tmp_path / 'unregistered'
+    project_root.mkdir()
+    (project_root / 'app.py').write_text('VALUE = 1\n', encoding='utf-8')
+    monkeypatch.setattr(main, 'workspace_manager', manager)
+
+    response = TestClient(main.app).post('/api/index', json={'path': str(project_root)})
+
+    assert response.status_code == 403
+    assert response.json()['error']['code'] == 'PROJECT_NOT_REGISTERED'
+
+
+def test_index_endpoint_accepts_registered_workspace(tmp_path, monkeypatch):
+    manager = WorkspaceManager(tmp_path / 'workspace.db')
+    project_root = tmp_path / 'registered'
+    project_root.mkdir()
+    (project_root / 'app.py').write_text('VALUE = 1\n', encoding='utf-8')
+    manager.load(project_root)
+    project_store = main.Store(tmp_path / 'agent.db')
+    monkeypatch.setattr(main, 'workspace_manager', manager)
+    monkeypatch.setattr(main, 'store', project_store)
+
+    response = TestClient(main.app).post('/api/index', json={'path': str(project_root)})
+
+    assert response.status_code == 200
+    assert response.json()['files_indexed'] == 1
+
+
+def test_create_chat_rejects_unknown_project_reference(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, 'workspace_manager', WorkspaceManager(tmp_path / 'workspace.db'))
+
+    response = TestClient(main.app).post('/api/chats', json={
+        'title': 'Invalid project chat', 'project_id': 999,
+    })
+
+    assert response.status_code == 404
+    assert response.json()['error']['code'] == 'PROJECT_NOT_FOUND'
+
+
 def test_usage_cost_uses_input_and_output_prices():
     model = {'input_price': 2.0, 'output_price': 8.0}
     assert main._estimated_cost(model, 500_000, 250_000) == 3.0

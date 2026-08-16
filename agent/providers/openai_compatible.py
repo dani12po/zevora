@@ -1,5 +1,7 @@
 import re
 
+import logging
+
 import httpx
 
 from ..config import settings
@@ -12,6 +14,9 @@ from .errors import (
     map_http_error,
     raise_for_response,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAICompatibleProvider(AIProvider):
@@ -63,7 +68,8 @@ class OpenAICompatibleProvider(AIProvider):
             return True
         except ProviderError:
             return False
-        except Exception:
+        except Exception as error:
+            logger.warning("Provider health check failed for %s: %s", self.name, type(error).__name__)
             return False
 
     async def list_models(self):

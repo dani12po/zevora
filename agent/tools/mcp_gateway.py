@@ -188,9 +188,15 @@ class LocalMCPGateway:
             return 'RESTRICTED', parts
         if executable in {'git', 'git.exe'} and lowered[1:2] in (['checkout'], ['switch'], ['reset'], ['clean'], ['push']):
             return 'RESTRICTED', parts
+        safe_python_module = (
+            executable in {'python', 'python.exe', 'py'}
+            and lowered[1:2] == ['-m']
+            and lowered[2:3] in (['pytest'], ['compileall'])
+        )
         safe = (
             (executable in {'npm', 'npm.cmd'} and (lowered[1:2] == ['test'] or lowered[1:3] == ['run', 'build']))
-            or (executable in {'python', 'python.exe', 'py'} and ('--version' in lowered or '-m' in lowered))
+            or (executable in {'python', 'python.exe', 'py'} and '--version' in lowered)
+            or safe_python_module
             or (executable in {'node', 'node.exe'} and ('--check' in lowered or '--version' in lowered))
             or (executable in {'git', 'git.exe'} and lowered[1:2] in (['status'], ['diff'], ['log']))
         )

@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -27,6 +27,24 @@ CAPABILITY_KEYS = {
 }
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,79}$")
 _ENV_RE = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
+_SENSITIVE_KEY_RE = re.compile(
+    r"(?i)(?:^|[_-])(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|password|secret|credential)(?:$|[_-])"
+)
+_SENSITIVE_HEADER_RE = re.compile(r"(?i)^(?:authorization|proxy-authorization|x-api-key|api-key|x-auth-token)$")
+_SECRET_VALUE_RE = re.compile(r"(?i)(?:bearer\s+\S+|\bsk-[A-Za-z0-9_-]{8,}\b)")
+
+
+def _validate_secret_free(value: Any, path: str) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if _SENSITIVE_KEY_RE.search(str(key)) and item not in (None, "", False):
+                raise ValueError(f"{path} must not contain credential metadata")
+            _validate_secret_free(item, path)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _validate_secret_free(item, path)
+    elif isinstance(value, str) and _SECRET_VALUE_RE.search(value):
+        raise ValueError(f"{path} must not contain literal credentials")
 
 
 @dataclass(frozen=True)
@@ -85,6 +103,9 @@ class RuntimeManifest:
         for key, value in self.environment.items():
             if not _ENV_RE.fullmatch(key) or len(str(value)) > 2048:
                 raise ValueError("invalid runtime environment metadata")
+            if _SENSITIVE_KEY_RE.search(key):
+                raise ValueError("runtime environment must not contain credential metadata")
+        _validate_secret_free(self.environment, "runtime environment")
 
 
 @dataclass(frozen=True)
@@ -136,13 +157,18 @@ class ProviderManifest:
         unknown = set(self.capabilities) - CAPABILITY_KEYS
         if unknown:
             raise ValueError(f"unknown capabilities: {', '.join(sorted(unknown))}")
-        for mapping in (self.request_options, self.extra_body):
+        for name, mapping in (("request options", self.request_options), ("extra body", self.extra_body)):
             json.dumps(mapping, ensure_ascii=True)
+            _validate_secret_free(mapping, name)
+        credential_placeholder = f"${{{self.credential.name}}}" if self.credential.name else ""
         for key, value in self.headers.items():
             if not key.strip() or "\r" in key or "\n" in key or "\r" in value or "\n" in value:
                 raise ValueError("invalid provider header")
             if len(key) > 128 or len(value) > 4096:
                 raise ValueError("provider header is too large")
+            sensitive = _SENSITIVE_HEADER_RE.fullmatch(key.strip()) or _SECRET_VALUE_RE.search(value)
+            if sensitive and (not credential_placeholder or credential_placeholder not in value):
+                raise ValueError("sensitive provider headers must use the declared credential placeholder")
         if self.context_length is not None and self.context_length <= 0:
             raise ValueError("context_length must be positive")
 
@@ -276,6 +302,12 @@ class ProviderStore:
             script_path = self.script_path(manifest)
             script_path.parent.mkdir(parents=True, exist_ok=True)
             previous_script = script_path.read_bytes() if script_path.is_file() else None
+            if previous_script != encoded_script and manifest.runtime.trusted:
+                manifest = replace(
+                    manifest,
+                    runtime=replace(manifest.runtime, trusted=False),
+                    state="CONFIGURED",
+                )
             temporary_script = script_path.with_suffix(script_path.suffix + ".tmp")
             temporary_script.write_bytes(encoded_script)
             temporary_script.replace(script_path)

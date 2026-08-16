@@ -1,7 +1,11 @@
+import logging
 from datetime import datetime, timezone
 from ..models.metadata import ModelMetadata
 from ..models.registry import ModelRegistry
 from .registry import configured_providers, get_provider
+
+logger = logging.getLogger(__name__)
+
 
 class ProviderDiscovery:
     def __init__(self, registry: ModelRegistry): self.registry = registry
@@ -16,7 +20,8 @@ class ProviderDiscovery:
             provider = get_provider(item['provider'])
             try:
                 health = await provider.health_check() if item['configured'] and item['enabled'] else False
-            except Exception:
+            except Exception as error:
+                logger.warning("Provider discovery health check failed for %s: %s", item['provider'], type(error).__name__)
                 health = False
             status = 'disabled' if not item['enabled'] else (
                 'healthy' if health else ('unconfigured' if not item['configured'] else 'unavailable')
@@ -41,13 +46,15 @@ class ProviderDiscovery:
                 continue
             try:
                 healthy = await provider.health_check()
-            except Exception:
+            except Exception as error:
+                logger.warning("Provider refresh health check failed for %s: %s", name, type(error).__name__)
                 healthy = False
             models: list[dict] = []
             if healthy:
                 try:
                     models = await provider.list_models()
-                except Exception:
+                except Exception as error:
+                    logger.warning("Provider model refresh failed for %s: %s", name, type(error).__name__)
                     models = []
             normalized = [
                 ModelMetadata(

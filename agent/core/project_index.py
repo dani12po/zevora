@@ -2,8 +2,10 @@
 
 import hashlib
 import re
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 
 MANIFESTS = {
     'package.json': 'JavaScript/TypeScript',
@@ -24,6 +26,9 @@ TEXT_SUFFIXES = {
     '.ts', '.tsx', '.txt', '.xml', '.yaml', '.yml',
 }
 TOKEN_RE = re.compile(r'[A-Za-z0-9_./-]{2,}')
+_INDEX_CACHE_MAX_PROJECTS = 16
+_INDEX_CACHE: OrderedDict[tuple[str, int, int], list[dict]] = OrderedDict()
+_INDEX_CACHE_LOCK = Lock()
 
 
 def detect_language(path: Path) -> str:
@@ -53,14 +58,27 @@ def _search_text(path: Path, size: int, max_text_bytes: int) -> str:
     return data.decode('utf-8', errors='replace')
 
 
-def index_project(root: Path, max_files: int = 1000, max_text_bytes: int = 128_000) -> list[dict]:
-    """Index stable file metadata and bounded searchable text under ``root``."""
+def index_project(
+    root: Path,
+    max_files: int = 1000,
+    max_text_bytes: int = 128_000,
+    prior_rows: list[dict] | None = None,
+) -> list[dict]:
+    """Incrementally index files under ``root`` using stable stat metadata."""
     root = root.resolve()
+    if not root.is_dir():
+        raise ValueError('Project directory not found')
+    max_files = max(1, min(int(max_files), 10_000))
+    max_text_bytes = max(1, min(int(max_text_bytes), 1_000_000))
+    cache_key = (str(root), max_files, max_text_bytes)
+    if prior_rows is None:
+        with _INDEX_CACHE_LOCK:
+            prior_rows = _INDEX_CACHE.get(cache_key, [])
+    previous = {str(row.get('path')): row for row in (prior_rows or [])}
     now = datetime.now(timezone.utc).isoformat()
     rows: list[dict] = []
     candidates = sorted(
-        (path for path in root.rglob('*') if path.is_file()),
-        key=lambda path: path.relative_to(root).as_posix().lower(),
+        root.rglob('*'), key=lambda path: path.relative_to(root).as_posix().lower()
     )
     for path in candidates:
         relative = path.relative_to(root)
@@ -69,20 +87,49 @@ def index_project(root: Path, max_files: int = 1000, max_text_bytes: int = 128_0
         if any(part in IGNORED_PARTS for part in relative.parts):
             continue
         try:
-            size = path.stat().st_size
-            content_hash = _digest(path)
-            text = _search_text(path, size, max_text_bytes)
+            resolved = path.resolve()
+            if resolved != root and root not in resolved.parents:
+                continue
+            if not resolved.is_file():
+                continue
+            stat = resolved.stat()
+        except (OSError, PermissionError):
+            continue
+        relative_text = relative.as_posix()
+        prior = previous.get(relative_text)
+        metadata_matches = prior and all((
+            prior.get('size_bytes') == stat.st_size,
+            prior.get('modified_ns') == stat.st_mtime_ns,
+            prior.get('changed_ns') == stat.st_ctime_ns,
+            prior.get('max_text_bytes') == max_text_bytes,
+        ))
+        if metadata_matches:
+            row = dict(prior)
+            row['indexed_at'] = now
+            rows.append(row)
+            continue
+        try:
+            content_hash = _digest(resolved)
+            text = _search_text(resolved, stat.st_size, max_text_bytes)
         except (OSError, PermissionError):
             continue
         rows.append({
-            'path': relative.as_posix(),
+            'path': relative_text,
             'language': detect_language(path),
-            'summary': f'{path.name} ({size} bytes)',
+            'summary': f'{path.name} ({stat.st_size} bytes)',
             'content_hash': content_hash,
-            'size_bytes': size,
+            'size_bytes': stat.st_size,
             'search_text': text,
             'indexed_at': now,
+            'modified_ns': stat.st_mtime_ns,
+            'changed_ns': stat.st_ctime_ns,
+            'max_text_bytes': max_text_bytes,
         })
+    with _INDEX_CACHE_LOCK:
+        _INDEX_CACHE[cache_key] = [dict(row) for row in rows]
+        _INDEX_CACHE.move_to_end(cache_key)
+        while len(_INDEX_CACHE) > _INDEX_CACHE_MAX_PROJECTS:
+            _INDEX_CACHE.popitem(last=False)
     return rows
 
 
