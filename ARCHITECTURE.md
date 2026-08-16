@@ -1,0 +1,141 @@
+# Arsitektur ZEVORA
+
+```text
+User request + selected workspace
+    ├── Workspace access policy
+    └── Project discovery (frameworks, languages, manifests, files)
+             ↓
+Redaction → exact cache ─── HIT → final response
+             ↓ MISS
+Local context retrieval (knowledge + memory + project index)
+             ↓
+Task classification + capability detection
+             ↓
+Adaptive Hybrid Router (complexity × capability × cost × history)
+    ├── LocalProvider: Zevora Local AI
+    │     └── llama.cpp → models/zevora-4b-thinking.gguf (lazy-loaded)
+    └── Cloud providers: OpenAI / Anthropic / xAI / DeepSeek / NVIDIA / Gemini
+             ↓
+Structured action plan → approval boundary → scoped MCP execution
+             ↓
+Verification → failed work requires a new approved repair action
+             ↓
+Quality gate → reject or retry with the next capable route
+             ↓
+Final response → knowledge extraction + compression + deduplication
+             ↓
+Cache + memory + usage + routing experience
+```
+
+## Agent Flow Contract
+
+`POST /api/task` preserves the existing response fields and adds `project_discovery`,
+`context_status`, and `flow`. The context states are:
+
+| State | Meaning |
+|-------|---------|
+| `CACHE_SUFFICIENT` | An exact prompt and project fingerprint match answered without inference |
+| `RETRIEVAL_ENRICHED` | Local knowledge, memory, project discovery, attachments, or approved tool observations enriched the request |
+| `ROUTER_REQUIRED` | No reusable local context was found, so novel inference is required |
+
+The `flow` object reports workspace, discovery, context, route, action,
+verification, and knowledge stages. A selected workspace is indexed before
+planning or inference. Frameworks, languages, package manager, manifests, and a
+bounded file tree are returned as `project_discovery` and included in provider
+context.
+
+For workspace requests, the gateway parses only strict structured plans. Model
+prose is never executable. Approved actions run through the workspace-scoped MCP
+gateway. Failed verification is recorded as `FAILED`; ZEVORA marks `FIX` as
+`not_executed` and requires a new explicitly approved repair action before code
+can change or verification can run again.
+
+## Local Intelligence
+
+ZEVORA includes a real local inference provider named **Zevora Local AI**. It
+runs the bundled GGUF through `llama-cpp-python` and llama.cpp, loads the model
+only on the first eligible request, and does not require an API key or an
+Ollama daemon. ZEVORA did not modify, train, or take ownership of the underlying
+model weights.
+
+| Component | Purpose |
+|-----------|---------|
+| **Zevora Local AI** | Private on-device text generation through the bundled GGUF |
+| **Exact Cache** | Return previous responses to identical prompts without inference |
+| **Memory** | Conversation, project, and experience records in SQLite |
+| **Experience** | Per-provider routing history; improves model selection over time |
+| **Knowledge Engine** | Extracts reusable solution patterns from responses to enrich future context |
+| **Project Context** | Indexed project metadata for scoped workspace operations |
+| **MCP Tools** | Filesystem, Git, and terminal access scoped to the active project |
+
+Local inference is preferred for lightweight text and coding work. Complex,
+architectural, migration, multi-file, long-context, and vision tasks prefer cloud
+models when available. The `LOCAL_ONLY` and `CLOUD_ONLY` modes constrain routing
+explicitly. A quality rejection or provider failure advances to the next capable
+candidate, allowing local-to-cloud and cloud-to-local recovery.
+
+## Multi-provider gateway
+
+`agent/providers/discovery.py` discovers configured providers on startup and
+caches verified model metadata in `data/database/model_registry.db`. Discovery
+runs once at startup; manual refresh is available via `POST /api/models/refresh`.
+
+Provider adapters normalise health checks and errors. Built-in OpenAI-compatible adapters
+cover OpenAI, xAI, NVIDIA, and DeepSeek. Anthropic and Gemini have dedicated
+adapters because their APIs differ. Unknown capabilities and pricing are stored
+as `unknown`, not inferred.
+
+Adding a new custom OpenAI-compatible provider is fully supported through configuration:
+Simply add it to `config/providers.json` under `custom_providers`. It will be automatically
+discovered, scored, and routed without requiring code changes.
+
+## Routing
+
+`AdaptiveHybridRouter` keeps local and cloud candidate pools while preserving the
+provider registry and model metadata contracts. In `AUTO` mode it orders local
+models first for routine work and cloud models first for complex or vision work.
+`LOCAL_ONLY` and `CLOUD_ONLY` restrict the candidate pool. Capability match, cost,
+historical success rate, routing priority, and task complexity all contribute to
+selection.
+
+The gateway quality-checks each response. A rejected response or provider error
+is recorded in the fallback trace and advances to the next capable candidate.
+`CLOUD_FALLBACK` controls whether additional candidates are attempted after the
+first route.
+
+## MCP tool gateway
+
+`agent/tools/mcp_gateway.py` is the constrained boundary for local project
+actions. It scopes filesystem, terminal, and Git operations to the selected
+project. Read-only operations follow workspace preferences; mutations and risky
+commands require explicit approval. Approval may be granted once or for the
+current session, while denial remains authoritative. Paths outside the selected
+workspace are blocked even when an action carries `approved=true`; they must be
+handled by selecting another workspace rather than bypassing the boundary. See
+[MCP_TOOLS.md](docs/MCP_TOOLS.md).
+
+Successful actions produce authoritative observations and, for mutations, a
+local receipt without calling an inference provider. Final provider responses and
+mutation receipts are compressed into bounded knowledge records. Normalized
+problem hashes merge duplicates and reuse increases hit counts, while retention
+removes only expired low-value records.
+
+## Basic skill source
+
+`agent/skills/openclaw.py` loads read-only reference skills from
+`BASIC_SKILLS_DIR` on-demand. At most two matching skills are loaded per
+request, capped at 8 000 characters total, filtered by `BASIC_SKILLS_ALLOWLIST`.
+Skills are never stored in the database or loaded at idle.
+
+## Implementation status
+
+| Phase | Status |
+|-------|--------|
+| Gateway, local/cloud providers, cache, memory, experience, project discovery | Implemented |
+| Adaptive hybrid routing and bidirectional quality-gated fallback | Implemented |
+| Approval-gated planning, MCP execution, observations, and verification | Implemented |
+| Flow telemetry and chat metadata persistence | Implemented |
+| Knowledge extraction, bounded compression, deduplication, and pruning | Implemented |
+| Local runtime telemetry and Providers UI status | Implemented |
+| Semantic cache, automatic approval-safe repair planning, advanced policy routing | Planned |
+| RAG, evaluation, fine-tuning | Planned |

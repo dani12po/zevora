@@ -1,0 +1,21 @@
+.env
+.venv/
+.pip-tmp/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.egg-info/
+
+# Local model weights exceed GitHub's file limit and are installed separately.
+*.gguf
+
+# Runtime state, credentials, and generated local data.
+config/mcp.json
+data/database/*.db
+data/runtime/*
+logs/*
+cache/*
+
+# Local archives and editor-specific state.
+*.zip
+.vscode/

@@ -1,0 +1,158 @@
+import asyncio
+
+import httpx
+import pytest
+
+from agent.config import settings
+from agent.providers.anthropic_provider import AnthropicProvider
+from agent.providers.errors import (
+    InvalidRequestError,
+    ModelNotFoundError,
+    ProviderAuthenticationError,
+    ProviderError,
+    ProviderRateLimitError,
+    ProviderTimeoutError,
+    ProviderUnavailableError,
+)
+from agent.providers.gemini_provider import GeminiProvider
+from agent.providers.openai_compatible import OpenAICompatibleProvider
+
+
+class FakeResponse:
+    def __init__(self, status_code=200, payload=None):
+        self.status_code = status_code
+        self._payload = payload if payload is not None else {}
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+class FakeClient:
+    response = FakeResponse(
+        payload={
+            'choices': [{
+                'message': {'content': 'answer'},
+            }],
+            'usage': {'prompt_tokens': 2, 'completion_tokens': 3},
+        }
+    )
+    error = None
+    instances = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.__class__.instances.append(self)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    async def get(self, *_args, **_kwargs):
+        if self.error:
+            raise self.error
+        return self.response
+
+    async def post(self, *_args, **_kwargs):
+        if self.error:
+            raise self.error
+        return self.response
+
+
+def install_client(monkeypatch, response=None, error=None):
+    FakeClient.instances = []
+    FakeClient.response = response or FakeResponse(
+        payload={
+            'choices': [{
+                'message': {'content': 'answer'},
+            }],
+            'usage': {'prompt_tokens': 2, 'completion_tokens': 3},
+        }
+    )
+    FakeClient.error = error
+    monkeypatch.setattr(httpx, 'AsyncClient', FakeClient)
+
+
+def test_openai_compatible_uses_configured_timeout(monkeypatch):
+    install_client(monkeypatch)
+    monkeypatch.setattr(settings, 'provider_timeout_seconds', 17)
+    provider = OpenAICompatibleProvider(
+        'custom', 'key', 'https://example.test/v1', 'model'
+    )
+
+    asyncio.run(provider.complete('hello'))
+
+    assert FakeClient.instances[0].kwargs['timeout'] == 17
+
+
+@pytest.mark.parametrize(
+    ('status', 'exception'),
+    [
+        (401, ProviderAuthenticationError),
+        (403, ProviderAuthenticationError),
+        (404, ModelNotFoundError),
+        (429, ProviderRateLimitError),
+        (422, InvalidRequestError),
+        (500, ProviderUnavailableError),
+    ],
+)
+def test_openai_statuses_use_shared_exceptions(
+    monkeypatch, status, exception
+):
+    install_client(monkeypatch, response=FakeResponse(status))
+    provider = OpenAICompatibleProvider(
+        'custom', 'key', 'https://example.test/v1', 'model'
+    )
+
+    with pytest.raises(exception):
+        asyncio.run(provider.complete('hello'))
+
+
+def test_openai_timeout_is_normalized(monkeypatch):
+    install_client(monkeypatch, error=httpx.ReadTimeout('timed out'))
+    provider = OpenAICompatibleProvider(
+        'custom', 'key', 'https://example.test/v1', 'model'
+    )
+
+    with pytest.raises(ProviderTimeoutError):
+        asyncio.run(provider.complete('hello'))
+
+
+def test_openai_malformed_response_is_normalized(monkeypatch):
+    install_client(monkeypatch, response=FakeResponse(payload={'choices': []}))
+    provider = OpenAICompatibleProvider(
+        'custom', 'key', 'https://example.test/v1', 'model'
+    )
+
+    with pytest.raises(ProviderUnavailableError):
+        asyncio.run(provider.complete('hello'))
+
+
+def test_native_capability_metadata_respects_vision_policy(monkeypatch):
+    monkeypatch.setattr(settings, 'gemini_api_key', 'gemini-key')
+    monkeypatch.setattr(settings, 'anthropic_api_key', 'anthropic-key')
+
+    gemini = asyncio.run(GeminiProvider('gemini-model').list_models())[0]
+    anthropic = asyncio.run(
+        AnthropicProvider('claude-model', supports_vision=True).list_models()
+    )[0]
+
+    assert gemini['supports_vision'] is False
+    assert 'vision' not in gemini['capabilities']
+    assert anthropic['supports_vision'] is True
+    assert 'vision' in anthropic['capabilities']
+
+
+def test_native_multimodal_rejects_disabled_vision(monkeypatch):
+    monkeypatch.setattr(settings, 'gemini_api_key', 'gemini-key')
+    monkeypatch.setattr(settings, 'anthropic_api_key', 'anthropic-key')
+    image = [{'media_type': 'image/png', 'data_base64': 'aW1hZ2U='}]
+
+    with pytest.raises(ProviderError):
+        asyncio.run(GeminiProvider('gemini-model').complete_multimodal('look', image))
+    with pytest.raises(ProviderError):
+        asyncio.run(AnthropicProvider('claude-model').complete_multimodal('look', image))

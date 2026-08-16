@@ -1,0 +1,1 @@
+GENERAL='general'; CODING='coding'; CODING_AGENT='coding_agent'; REASONING='reasoning'; FAST_RESPONSE='fast_response'; LONG_CONTEXT='long_context'; VISION='vision'; TOOL_USE='tool_use'; FUNCTION_CALLING='function_calling'; JSON='json'; EMBEDDING='embedding'; LOCAL='local'; PRIVATE='private'

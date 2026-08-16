@@ -1,0 +1,56 @@
+{
+  "providers": {
+    "local": {
+      "enabled": true,
+      "routing_priority": 100,
+      "default_model": "zevora",
+      "supports_vision": false,
+      "runtime": "llamacpp",
+      "model_path": "models/zevora-4b-thinking.gguf",
+      "context_length": 8192,
+      "max_output_tokens": 1024,
+      "capability_profile": {
+        "instruction_score": 0.78,
+        "coding_score": 0.68,
+        "reasoning_score": 0.72
+      }
+    },
+    "openai": {
+      "enabled": true,
+      "routing_priority": 90,
+      "supports_vision": true,
+      "default_model": "orcarouter/free"
+    },
+    "anthropic": {
+      "enabled": false,
+      "routing_priority": 95,
+      "default_model": "claude-3-5-haiku-latest",
+      "supports_vision": false
+    },
+    "deepseek": {
+      "enabled": false,
+      "routing_priority": 85,
+      "default_model": "deepseek-chat",
+      "supports_vision": false
+    },
+    "xai": {
+      "enabled": false,
+      "routing_priority": 80,
+      "default_model": "grok-3-mini",
+      "supports_vision": false
+    },
+    "gemini": {
+      "enabled": false,
+      "routing_priority": 75,
+      "default_model": "gemini-2.0-flash",
+      "supports_vision": false
+    },
+    "nvidia": {
+      "enabled": true,
+      "routing_priority": 90,
+      "default_model": "z-ai/glm-5.2",
+      "supports_vision": true
+    }
+  },
+  "model_overrides": {}
+}
