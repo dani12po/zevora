@@ -1,5 +1,6 @@
 """Project-aware persistence and safe workspace metadata, never full-repo copies."""
 import hashlib, json, sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from .project_index import index_project
@@ -11,8 +12,21 @@ class WorkspaceManager:
         CREATE TABLE IF NOT EXISTS workspace_permissions (workspace_id INTEGER PRIMARY KEY, preferences TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, title TEXT, project_id INTEGER, created_at TEXT, updated_at TEXT);
         CREATE TABLE IF NOT EXISTS chat_messages (id INTEGER PRIMARY KEY, chat_id TEXT, role TEXT, content TEXT, metadata TEXT, created_at TEXT);''')
+    @contextmanager
     def connection(self):
-        conn=sqlite3.connect(self.database); conn.row_factory=sqlite3.Row; return conn
+        conn = sqlite3.connect(self.database, timeout=30)
+        conn.row_factory = sqlite3.Row
+        conn.execute('PRAGMA busy_timeout=30000')
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('PRAGMA foreign_keys=ON')
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
     def _safe(self,path):
         resolved=Path(path).resolve()
         if resolved.parent == resolved: raise ValueError('Select a project folder, not an entire drive')
