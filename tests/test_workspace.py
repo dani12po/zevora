@@ -59,6 +59,23 @@ def test_parallel_workspace_writes_wait_for_sqlite_lock(tmp_path):
     assert all(len(manager.get_chat(chat_id)['messages']) == 2 for chat_id in chat_ids)
 
 
+def test_projects_exclude_missing_directories(tmp_path):
+    manager = WorkspaceManager(tmp_path / 'workspace.db')
+    existing = tmp_path / 'existing'
+    existing.mkdir()
+    manager.load(existing)
+    with manager.connection() as conn:
+        conn.execute(
+            'INSERT INTO workspace_projects'
+            '(name, path, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+            ('missing', str(tmp_path / 'missing'), '{}', '1', '2'),
+        )
+
+    projects = manager.projects()
+
+    assert [project['path'] for project in projects] == [str(existing.resolve())]
+
+
 def test_rapid_project_switching_has_stale_response_guard():
     source = (Path(__file__).parents[1] / 'static' / 'chat.js').read_text(encoding='utf-8')
 

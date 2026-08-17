@@ -54,8 +54,10 @@ def test_core_import_does_not_depend_on_cwd(monkeypatch, tmp_path):
     finally:
         os.chdir(original)
 
-def test_chat_contract_uses_existing_task_engine(monkeypatch):
-    chat = main.workspace_manager.create_chat('New chat')
+def test_chat_contract_uses_existing_task_engine(monkeypatch, tmp_path):
+    manager = WorkspaceManager(tmp_path / 'workspace.db')
+    monkeypatch.setattr(main, 'workspace_manager', manager)
+    chat = manager.create_chat('New chat')
     async def fake_task(request):
         return {
             'response': 'real-core-result', 'route': 'CLOUD', 'reason': 'BEST_CLOUD_MATCH',
@@ -191,7 +193,10 @@ def test_chat_forwards_actions_and_persists_safe_trace_metadata(monkeypatch, tmp
     assert 'Inspect source' not in metadata
 
 
-def test_api_error_contract_is_json_and_gateway_shaped(monkeypatch):
+def test_api_error_contract_is_json_and_gateway_shaped(monkeypatch, tmp_path):
+    manager = WorkspaceManager(tmp_path / 'workspace.db')
+    monkeypatch.setattr(main, 'workspace_manager', manager)
+
     async def unavailable(_request):
         raise main.HTTPException(503, 'No capable cloud model is available')
 

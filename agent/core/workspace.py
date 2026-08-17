@@ -83,7 +83,15 @@ class WorkspaceManager:
             )
         return self.permissions(workspace_id)
     def projects(self):
-        with self.connection() as conn: return [self.project(row) for row in conn.execute('SELECT * FROM workspace_projects ORDER BY updated_at DESC')]
+        with self.connection() as conn:
+            rows = conn.execute(
+                'SELECT * FROM workspace_projects ORDER BY updated_at DESC'
+            ).fetchall()
+        return [
+            self.project(row)
+            for row in rows
+            if Path(row['path']).is_dir()
+        ]
     def get(self,id):
         with self.connection() as conn: row=conn.execute('SELECT * FROM workspace_projects WHERE id=?',(id,)).fetchone()
         return self.project(row) if row else None

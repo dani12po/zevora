@@ -90,6 +90,9 @@ def test_indonesian_workspace_request_without_project_never_falls_back_to_chat()
 
 
 def test_task_returns_pending_approval_before_provider_call(tmp_path, monkeypatch):
+    manager = main.WorkspaceManager(tmp_path / 'workspace.db')
+    monkeypatch.setattr(main, 'workspace_manager', manager)
+
     async def provider_must_not_run(*_args, **_kwargs):
         raise AssertionError('provider should not run before approval')
 
@@ -151,7 +154,10 @@ def test_approved_action_still_blocks_path_escape(tmp_path, monkeypatch):
     assert not (tmp_path.parent / 'outside.txt').exists()
 
 
-def test_approved_action_still_blocks_dangerous_command(tmp_path):
+def test_approved_action_still_blocks_dangerous_command(tmp_path, monkeypatch):
+    manager = main.WorkspaceManager(tmp_path / 'workspace.db')
+    monkeypatch.setattr(main, 'workspace_manager', manager)
+
     with pytest.raises(HTTPException) as raised:
         asyncio.run(main.task(main.TaskRequest(
             prompt='format the system drive',
