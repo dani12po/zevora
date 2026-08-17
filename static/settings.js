@@ -1,4 +1,4 @@
-import {$, api, escapeHtml, pageWrap, setPanel} from './core.js';
+import {$, api, escapeHtml, pageWrap, setPanel, userErrorMessage} from './core.js';
 
 export async function renderSettings() {
   const settings = await api('/api/settings');
@@ -10,8 +10,8 @@ async function saveSettings(event) {
   event.preventDefault();
   try {
     await api('/api/settings',{method:'POST',body:JSON.stringify({routing_mode:$('s-routing-mode').value,cloud_fallback:$('s-cloud-fallback').checked,cost_optimization:$('s-cost-opt').checked})});
-    const message = $('settings-save-msg'); message.textContent = 'Saved'; message.classList.add('show'); setTimeout(() => message.classList.remove('show'), 2500);
+    const message = $('settings-save-msg'); message.textContent = 'Saved'; message.classList.remove('error-text'); message.classList.add('show'); setTimeout(() => message.classList.remove('show'), 2500);
   } catch (error) {
-    alert(`Save failed: ${error.message}`);
+    const message = $('settings-save-msg'); message.textContent = userErrorMessage(error); message.classList.add('show','error-text');
   }
 }

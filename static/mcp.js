@@ -1,4 +1,4 @@
-import {$, api, badge, escapeHtml, exposeHandlers, pageWrap, setPanel} from './core.js';
+import {$, api, badge, escapeHtml, exposeHandlers, pageWrap, setPanel, userErrorMessage} from './core.js';
 
 export async function renderMCP() {
   const tools = await api('/api/tools');
@@ -18,7 +18,7 @@ export async function setMCPToolEnabled(tool, input) {
     if (status) status.textContent = updated.enabled ? 'Enabled' : 'Disabled';
   } catch (error) {
     input.checked = previous;
-    if (status) status.textContent = error.message || 'Update failed';
+    if (status) status.textContent = userErrorMessage(error, 'Tool update failed.');
   } finally {
     input.disabled = false;
   }

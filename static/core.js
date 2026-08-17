@@ -55,6 +55,30 @@ export async function api(path, options = {}) {
   }
 }
 
+const ERROR_MESSAGES = {
+  AGENT_LOOP_LIMIT: 'Planning could not reach a stable result. Refine the request or try again.',
+  INTERNAL_ERROR: 'ZEVORA encountered an unexpected problem. Retry the request; restart the gateway if it continues.',
+  INVALID_ATTACHMENT: 'One or more attachments could not be read. Check the file type and size, then attach them again.',
+  INVALID_ROUTING_OVERRIDE: 'The selected routing option is incomplete. Choose Auto or select the required provider and model.',
+  MCP_TOOL_NOT_FOUND: 'That tool is no longer available. Refresh the tools page and choose an installed tool.',
+  PROJECT_NOT_FOUND: 'The selected project is no longer available. Open the project folder again.',
+  PROJECT_NOT_REGISTERED: 'Open this project in ZEVORA before indexing it.',
+  PROJECT_PATH_INVALID: 'The project folder cannot be accessed. Check that it still exists and is permitted.',
+  PROVIDER_CONFIGURATION_INVALID: 'The provider configuration is invalid. Review its endpoint, model, credentials, and runtime settings.',
+  PROVIDER_NOT_FOUND: 'That provider is no longer available. Refresh the page and select a configured provider.',
+  PROVIDER_RUNTIME_APPROVAL_REQUIRED: 'Approve this custom provider runtime before running it.',
+  ROUTING_OVERRIDE_UNAVAILABLE: 'The selected provider or model is unavailable. Choose another option or use Auto routing.',
+  SETTINGS_WRITE_FAILED: 'Settings could not be saved. Check file permissions and try again.',
+  SHUTDOWN_FORBIDDEN: 'Only the ZEVORA gateway controller can stop this process.',
+  UNINSTALL_PATH_REJECTED: 'Local Intelligence was not removed because its installation path is unsafe or invalid.',
+  VALIDATION_ERROR: 'Some request details are invalid. Review the highlighted values and try again.',
+  PICKER_UNAVAILABLE: 'The native folder picker is unavailable. Enter the project folder path manually.',
+};
+
+export function userErrorMessage(error, fallback = 'The request could not be completed.') {
+  return ERROR_MESSAGES[error?.code] || error?.message || fallback;
+}
+
 export function escapeHtml(value) {
   const node = document.createElement('div');
   node.textContent = value ?? '';
@@ -128,7 +152,7 @@ export async function render(path) {
   try {
     await routes.get(normalized)?.();
   } catch (error) {
-    setPanel(normalized.slice(1) || 'chat', `<div class="card"><b class="error-text">Error</b><p class="muted-copy">${escapeHtml(error.message)}</p></div>`);
+    setPanel(normalized.slice(1) || 'chat', `<div class="card"><b class="error-text">Unable to load this page</b><p class="muted-copy">${escapeHtml(userErrorMessage(error))}</p></div>`);
   }
 }
 

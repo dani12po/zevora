@@ -357,6 +357,38 @@ def test_static_chat_guidance_and_docs_contract():
     assert '.message-error' in css
 
 
+def test_frontend_error_codes_have_actionable_owning_page_presentations():
+    root = Path(__file__).resolve().parents[1]
+    static = root / 'static'
+    core = (static / 'core.js').read_text(encoding='utf-8')
+    chat = (static / 'chat.js').read_text(encoding='utf-8')
+    providers = (static / 'providers.js').read_text(encoding='utf-8')
+    settings = (static / 'settings.js').read_text(encoding='utf-8')
+    mcp = (static / 'mcp.js').read_text(encoding='utf-8')
+    audit = (root / 'AUDIT_CHANGELOG.md').read_text(encoding='utf-8')
+    error_codes = {
+        'AGENT_LOOP_LIMIT', 'INTERNAL_ERROR', 'INVALID_ATTACHMENT',
+        'INVALID_ROUTING_OVERRIDE', 'MCP_TOOL_NOT_FOUND', 'PROJECT_NOT_FOUND',
+        'PROJECT_NOT_REGISTERED', 'PROJECT_PATH_INVALID',
+        'PROVIDER_CONFIGURATION_INVALID', 'PROVIDER_NOT_FOUND',
+        'PROVIDER_RUNTIME_APPROVAL_REQUIRED', 'ROUTING_OVERRIDE_UNAVAILABLE',
+        'SETTINGS_WRITE_FAILED', 'SHUTDOWN_FORBIDDEN',
+        'UNINSTALL_PATH_REJECTED', 'VALIDATION_ERROR', 'PICKER_UNAVAILABLE',
+    }
+
+    assert all(f'{code}:' in core for code in error_codes)
+    assert all(f'`{code}`' in audit for code in error_codes)
+    assert "userErrorMessage(error)" in chat
+    assert "userErrorMessage({code:'INVALID_ATTACHMENT'" in chat
+    assert "error.code==='PROJECT_REQUIRED'" in chat
+    assert 'userErrorMessage(error)' in providers
+    assert 'id="provider-message"' in providers
+    assert 'userErrorMessage(error)' in settings
+    assert 'userErrorMessage(error' in mcp
+    assert 'alert(' not in providers
+    assert 'alert(' not in settings
+
+
 def test_static_frontend_module_and_theme_contract():
     root = Path(__file__).resolve().parents[1]
     static = root / 'static'

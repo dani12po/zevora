@@ -33,7 +33,32 @@
 - Fix: `agent/core/workspace.py` now uses a closing transaction context manager, WAL, a 30-second busy timeout, explicit commit/rollback, and foreign-key enforcement.
 - Regression coverage: `tests/test_workspace.py` exercises parallel A/B audits, concurrent chat writes, project identity, and the stale-response guard.
 
+## Error-code presentation coverage
+
+The API helper preserves machine-readable codes while each owning page presents actionable copy. Chat handles only codes reachable through `/api/agent/plan` or `/api/chat`; operational codes remain on their dedicated pages.
+
+| Error code | Triggering endpoint / page | Chat flow | User-facing presentation |
+| --- | --- | --- | --- |
+| `AGENT_LOOP_LIMIT` | `/api/agent/plan` / Chat | Yes | Suggests refining or retrying the request in the conversation error card. |
+| `INTERNAL_ERROR` | Any uncaught gateway exception / owning page | Possible | Gives retry/restart guidance through the shared page or chat error presenter. |
+| `INVALID_ATTACHMENT` | `/api/chat`, `/api/task` / Chat | Yes | Asks the user to check attachment type and size and attach again. |
+| `INVALID_ROUTING_OVERRIDE` | `/api/chat`, `/api/task` / Chat | Yes | Directs the user to Auto or a complete provider/model selection. |
+| `MCP_TOOL_NOT_FOUND` | `PUT /api/tools/{tool_name}` / MCP | No | Restores the toggle and asks the user to refresh and select an installed tool. |
+| `PROJECT_NOT_FOUND` | Chat creation/planning and project APIs / Chat or project picker | Yes | Asks the user to reopen the selected project folder. |
+| `PROJECT_NOT_REGISTERED` | `POST /api/index` / project indexing client | No | Explains that the project must first be opened in ZEVORA. |
+| `PROJECT_PATH_INVALID` | Project load or indexing / project picker | No | Explains that the folder must exist and be accessible. |
+| `PROVIDER_CONFIGURATION_INVALID` | Provider manifest endpoints / Providers | No | Points to endpoint, model, credential, and runtime settings. |
+| `PROVIDER_NOT_FOUND` | Provider manifest endpoints / Providers | No | Asks the user to refresh and choose a configured provider. |
+| `PROVIDER_RUNTIME_APPROVAL_REQUIRED` | Provider runtime test/refresh / Providers | No | Requests explicit runtime approval on the Providers page. |
+| `ROUTING_OVERRIDE_UNAVAILABLE` | `/api/chat`, `/api/task` / Chat | Yes | Suggests another provider/model or Auto routing. |
+| `SETTINGS_WRITE_FAILED` | `POST /api/settings` / Settings | No | Renders an inline save error with file-permission guidance. |
+| `SHUTDOWN_FORBIDDEN` | `POST /shutdown` / controller or API client | No | Explains that shutdown is controller-only; never shown as a chat failure. |
+| `UNINSTALL_PATH_REJECTED` | `POST /api/local-intelligence/uninstall` / Local Intelligence or API client | No | Explains that removal was blocked because the path is unsafe or invalid. |
+| `VALIDATION_ERROR` | Request validation on any endpoint / owning page | Possible | Asks the user to review invalid request values without exposing submitted input. |
+| `PICKER_UNAVAILABLE` | `POST /api/projects/pick-folder` / project picker | No | Keeps the dialog usable and directs the user to enter a path manually. |
+
 ## Test infrastructure
 
 - `pyproject.toml`: configured pytest with the repository root on the import path so the documented `pytest -q` command can collect `main.py` consistently on Windows.
+- `.github/workflows/ci.yml`: runs the Python suite and JavaScript syntax checks on both Ubuntu and Windows with Python 3.11 and Node.js 20.
 - Final verification target: the complete suite, JavaScript syntax checks, Python compile checks, and `git diff --check`.

@@ -1,4 +1,4 @@
-import {$, api, badge, emptyState, escapeHtml, exposeHandlers, pageWrap, setPanel} from './core.js';
+import {$, api, badge, emptyState, escapeHtml, exposeHandlers, pageWrap, setPanel, userErrorMessage} from './core.js';
 
 const LABELS = {local:'Zevora Local AI',openai:'OpenAI',xai:'xAI (Grok)',nvidia:'NVIDIA NIM',deepseek:'DeepSeek',gemini:'Google Gemini',anthropic:'Anthropic'};
 const DESCRIPTIONS = {
@@ -43,7 +43,7 @@ function providerCard(provider, statusMap, modelCounts) {
 
 function customPanel(manifests) {
   const rows = (manifests.providers || []).map(provider => `<div class="custom-provider-row"><div><b>${escapeHtml(provider.name)}</b> ${badge(provider.state, provider.state === 'HEALTHY' || provider.state === 'TRUSTED_RUNTIME' ? 'green' : 'grey')}<p>${escapeHtml(provider.protocol)} - ${escapeHtml(provider.default_model || 'model unresolved')} - ${provider.credential.configured ? escapeHtml(provider.credential.masked) : 'credential not set'}</p></div><div class="provider-actions"><button class="btn-sm" onclick="testCustomProvider('${provider.provider_id}',${provider.protocol === 'custom-runtime'})">Test</button><button class="btn-sm" onclick="exportCustomProvider('${provider.provider_id}')">Export</button>${provider.protocol === 'custom-runtime' && !provider.runtime?.trusted ? `<button class="btn-sm" onclick="trustCustomProvider('${provider.provider_id}')">Trust</button>` : ''}<button class="btn-sm danger" onclick="removeCustomProvider('${provider.provider_id}')">Delete</button></div></div>`).join('') || '<p class="muted-copy">No user-defined providers.</p>';
-  return `<section class="provider-manager"><div class="panel-toolbar"><div><h3>Bring your own AI</h3><p>Configure a compatible endpoint or statically inspect an example script.</p></div></div><div class="provider-form-grid">
+  return `<section class="provider-manager"><div class="panel-toolbar"><div><h3>Bring your own AI</h3><p>Configure a compatible endpoint or statically inspect an example script.</p><p id="provider-message" class="inline-status" aria-live="polite"></p></div></div><div class="provider-form-grid">
     <label>ID<input id="custom-provider-id" placeholder="my-provider"></label><label>Name<input id="custom-provider-name" placeholder="My Provider"></label><label>Protocol<select id="custom-provider-protocol"><option>openai-compatible</option><option>anthropic-compatible</option><option>http-rest</option><option>local-openai-compatible</option><option>custom-runtime</option><option>unknown</option></select></label><label>Base URL<input id="custom-provider-url"></label><label>Default model<input id="custom-provider-model"></label><label>Credential environment<input id="custom-provider-env"></label><label>Credential value<input id="custom-provider-key" type="password" autocomplete="new-password"></label><label>Runtime language<select id="custom-provider-runtime"><option value="python">Python</option><option value="node">Node</option><option value="typescript">TypeScript</option><option value="shell">Shell</option></select></label>
     </div><label class="provider-source-label">Example or runtime source<textarea id="custom-provider-source" rows="8"></textarea></label><div class="provider-actions"><button class="btn-sm" onclick="analyzeProviderSource()">Analyze</button><button class="btn-sm" onclick="importProviderJson()">Import JSON</button><button class="btn-sm" onclick="saveCustomProvider()">Save provider</button></div><pre id="provider-analysis" class="analysis-preview hidden"></pre><div class="custom-provider-list">${rows}</div></section>`;
 }
@@ -59,12 +59,32 @@ export async function renderProviders() {
 
 export async function analyzeProviderSource() {
   const source = $('custom-provider-source').value.trim(); if (!source) return;
-  const {analysis} = await api('/api/provider-manifests/analyze',{method:'POST',body:JSON.stringify({source,language:'auto'})});
-  $('provider-analysis').textContent = JSON.stringify(analysis,null,2); $('provider-analysis').classList.remove('hidden');
-  if (analysis.protocol && analysis.protocol !== 'unknown') $('custom-provider-protocol').value = analysis.protocol;
-  if (analysis.base_url) $('custom-provider-url').value = analysis.base_url;
-  if (analysis.model) $('custom-provider-model').value = analysis.model;
-  if (analysis.credential_env) $('custom-provider-env').value = analysis.credential_env;
+  await providerAction(async()=>{
+    const {analysis} = await api('/api/provider-manifests/analyze',{method:'POST',body:JSON.stringify({source,language:'auto'})});
+    $('provider-analysis').textContent = JSON.stringify(analysis,null,2); $('provider-analysis').classList.remove('hidden');
+    if (analysis.protocol && analysis.protocol !== 'unknown') $('custom-provider-protocol').value = analysis.protocol;
+    if (analysis.base_url) $('custom-provider-url').value = analysis.base_url;
+    if (analysis.model) $('custom-provider-model').value = analysis.model;
+    if (analysis.credential_env) $('custom-provider-env').value = analysis.credential_env;
+  });
+}
+
+function showProviderMessage(message, error = false) {
+  const status = $('provider-message');
+  if (!status) return;
+  status.textContent = message;
+  status.classList.toggle('error-text', error);
+}
+
+async function providerAction(action, success = '') {
+  try {
+    const result = await action();
+    if (success) showProviderMessage(success);
+    return result;
+  } catch (error) {
+    showProviderMessage(userErrorMessage(error), true);
+    return null;
+  }
 }
 
 function customProviderPayload() {
@@ -72,15 +92,15 @@ function customProviderPayload() {
   return {provider_id:$('custom-provider-id').value.trim().toLowerCase(),name:$('custom-provider-name').value.trim(),protocol,base_url:$('custom-provider-url').value.trim(),default_model:$('custom-provider-model').value.trim(),credential:{source:'environment',name:$('custom-provider-env').value.trim().toUpperCase()},enabled:true,routing_priority:50,capabilities:{chat:true,streaming:null,reasoning:null,vision:null,tool_calling:null},runtime:protocol === 'custom-runtime' ? {runtime:language,entrypoint:language === 'python' ? 'provider.py' : language === 'shell' ? 'provider.sh' : 'provider.js',trusted:false,permissions:{network:true,filesystem:'temporary',workspace:false,allowed_hosts:[]}} : null};
 }
 
-export async function saveCustomProvider() { const manifest=customProviderPayload(); await api('/api/provider-manifests',{method:'POST',body:JSON.stringify({manifest,credential_value:$('custom-provider-key').value||null,script:manifest.runtime?$('custom-provider-source').value:null})}); await renderProviders(); }
-export async function importProviderJson() { let manifest; try { manifest=JSON.parse($('custom-provider-source').value.trim()); } catch (_) { alert('Paste a valid provider manifest JSON document.'); return; } await api('/api/provider-manifests/import',{method:'POST',body:JSON.stringify({manifest,credential_value:$('custom-provider-key').value||null})}); await renderProviders(); }
-export async function testCustomProvider(id,isRuntime) { if (isRuntime && !confirm('Run this provider script once with its declared credential and permissions?')) return; const result=await api(`/api/provider-manifests/${id}/${isRuntime?'runtime-test':'test'}`,{method:'POST',body:JSON.stringify({runtime_approved:isRuntime})}); alert(result.result?.success?'Connection succeeded':result.result?.message||'Connection failed'); await renderProviders(); }
-export async function trustCustomProvider(id) { if(confirm('Trust this runtime for future provider requests?')) { await api(`/api/provider-manifests/${id}/trust`,{method:'POST',body:JSON.stringify({approved:true})}); await renderProviders(); } }
-export async function removeCustomProvider(id) { if(confirm(`Delete provider ${id} and its stored runtime source?`)) { await api(`/api/provider-manifests/${id}`,{method:'DELETE'}); await renderProviders(); } }
-export async function exportCustomProvider(id) { const data=await api(`/api/provider-manifests/${id}/export`), blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}), link=document.createElement('a'); link.href=URL.createObjectURL(blob); link.download=`${id}.provider.json`; link.click(); URL.revokeObjectURL(link.href); }
+export async function saveCustomProvider() { const manifest=customProviderPayload(); await providerAction(async()=>{await api('/api/provider-manifests',{method:'POST',body:JSON.stringify({manifest,credential_value:$('custom-provider-key').value||null,script:manifest.runtime?$('custom-provider-source').value:null})});await renderProviders();showProviderMessage('Provider saved.');}); }
+export async function importProviderJson() { let manifest; try { manifest=JSON.parse($('custom-provider-source').value.trim()); } catch (_) { showProviderMessage('Paste a valid provider manifest JSON document.',true); return; } await providerAction(async()=>{await api('/api/provider-manifests/import',{method:'POST',body:JSON.stringify({manifest,credential_value:$('custom-provider-key').value||null})});await renderProviders();showProviderMessage('Provider imported.');}); }
+export async function testCustomProvider(id,isRuntime) { if (isRuntime && !confirm('Run this provider script once with its declared credential and permissions?')) return; await providerAction(async()=>{const result=await api(`/api/provider-manifests/${id}/${isRuntime?'runtime-test':'test'}`,{method:'POST',body:JSON.stringify({runtime_approved:isRuntime})});showProviderMessage(result.result?.success?'Connection succeeded':result.result?.message||'Connection failed',!result.result?.success);}); }
+export async function trustCustomProvider(id) { if(confirm('Trust this runtime for future provider requests?')) await providerAction(async()=>{await api(`/api/provider-manifests/${id}/trust`,{method:'POST',body:JSON.stringify({approved:true})});await renderProviders();showProviderMessage('Provider runtime trusted.');}); }
+export async function removeCustomProvider(id) { if(confirm(`Delete provider ${id} and its stored runtime source?`)) await providerAction(async()=>{await api(`/api/provider-manifests/${id}`,{method:'DELETE'});await renderProviders();showProviderMessage('Provider deleted.');}); }
+export async function exportCustomProvider(id) { await providerAction(async()=>{const data=await api(`/api/provider-manifests/${id}/export`), blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}), link=document.createElement('a'); link.href=URL.createObjectURL(blob); link.download=`${id}.provider.json`; link.click(); URL.revokeObjectURL(link.href);showProviderMessage('Provider exported.');}); }
 export function markProviderDirty(id) { const button=$(`save-btn-${id}`); if(button) button.disabled=false; }
 export function toggleKeyEdit(id) { $(`key-edit-${id}`).style.display='grid'; $(`key-display-${id}`).closest('.provider-field').style.display='none'; markProviderDirty(id); }
 export function cancelKeyEdit(id) { $(`key-edit-${id}`).style.display='none'; $(`key-display-${id}`).closest('.provider-field').style.display='grid'; }
-export async function saveProvider(id) { const button=$(`save-btn-${id}`), key=$(`key-input-${id}`), priority=Number.parseInt($(`prio-${id}`)?.value,10); button.classList.add('btn-loading'); try { await api('/api/providers/config',{method:'POST',body:JSON.stringify({provider:id,base_url:$(`url-${id}`)?.value||null,default_model:$(`model-${id}`)?.value?.trim()||null,routing_priority:Number.isNaN(priority)?null:priority,enabled:$(`toggle-${id}`)?.checked??null,supports_vision:$(`vision-${id}`)?.checked??null,api_key:key?.value?.trim()||null})}); const message=$(`save-msg-${id}`); message.classList.add('show'); setTimeout(()=>message.classList.remove('show'),2500); button.disabled=true; if(key){key.value='';cancelKeyEdit(id);} } catch(error){alert(`Save failed: ${error.message}`);} finally{button.classList.remove('btn-loading');} }
+export async function saveProvider(id) { const button=$(`save-btn-${id}`), key=$(`key-input-${id}`), priority=Number.parseInt($(`prio-${id}`)?.value,10); button.classList.add('btn-loading'); try { await api('/api/providers/config',{method:'POST',body:JSON.stringify({provider:id,base_url:$(`url-${id}`)?.value||null,default_model:$(`model-${id}`)?.value?.trim()||null,routing_priority:Number.isNaN(priority)?null:priority,enabled:$(`toggle-${id}`)?.checked??null,supports_vision:$(`vision-${id}`)?.checked??null,api_key:key?.value?.trim()||null})}); const message=$(`save-msg-${id}`); message.textContent='Saved';message.classList.remove('error-text');message.classList.add('show'); setTimeout(()=>message.classList.remove('show'),2500); button.disabled=true; if(key){key.value='';cancelKeyEdit(id);} } catch(error){const message=$(`save-msg-${id}`);message.textContent=userErrorMessage(error);message.classList.add('show','error-text');} finally{button.classList.remove('btn-loading');} }
 
 exposeHandlers({analyzeProviderSource,saveCustomProvider,importProviderJson,testCustomProvider,trustCustomProvider,removeCustomProvider,exportCustomProvider,markProviderDirty,toggleKeyEdit,cancelKeyEdit,saveProvider});
