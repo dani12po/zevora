@@ -93,6 +93,28 @@ def test_chat_connects_existing_conversation_to_selected_project(monkeypatch, tm
     assert captured['project'] == str(root.resolve())
 
 
+def test_frontend_api_reads_fastapi_detail_and_zevora_error_envelopes():
+    source = (Path(__file__).parents[1] / 'static' / 'core.js').read_text(encoding='utf-8')
+
+    assert 'data.detail || data.error || {}' in source
+    assert "Object.assign(error, normalized)" in source
+
+
+def test_chat_ui_renders_attribution_markdown_attempts_and_retry():
+    root = Path(__file__).parents[1] / 'static'
+    chats = (root / 'chats.js').read_text(encoding='utf-8')
+    chat = (root / 'chat.js').read_text(encoding='utf-8')
+    markdown = (root / 'markdown.js').read_text(encoding='utf-8')
+
+    assert "item.source === 'local_model'" in chats
+    assert 'message-avatar' in chats and 'fallback-trace' in chats
+    assert 'meta.typing' in chats and 'meta.retry' in chats
+    assert 'failure_reason' in chats and 'failure_message' in chats
+    assert 'data-copy-code' in markdown and 'navigator.clipboard.writeText' in markdown
+    assert 'renderMarkdown(text)' in chats
+    assert 'resizePrompt()' in chat and 'retrying:true' in chat
+
+
 def test_chat_failure_does_not_persist_half_exchange(monkeypatch, tmp_path):
     manager = WorkspaceManager(tmp_path / 'workspace.db')
     chat = manager.create_chat('New chat')

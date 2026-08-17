@@ -4,7 +4,13 @@ import pytest
 
 import main
 from agent.memory.store import Store
-from agent.providers.errors import ProviderUnavailableError
+from agent.providers.errors import (
+    ModelNotFoundError,
+    ProviderAuthenticationError,
+    ProviderRateLimitError,
+    ProviderTimeoutError,
+    ProviderUnavailableError,
+)
 from agent.routing.fallback import with_fallback
 from agent.routing.hybrid_router import Route, RoutingDecision
 from agent.routing.model_selector import Selection
@@ -88,7 +94,30 @@ def test_cloud_completion_reports_local_and_all_failed_alternatives(tmp_path, mo
     assert all(item['route'] == 'CLOUD' for item in detail['fallback_trace'])
     assert all(item['source'] == 'cloud_provider' for item in detail['fallback_trace'])
     assert all(item['status'] == 'failed' for item in detail['fallback_trace'])
+    assert all(item['failure_reason'] == 'NETWORK_ERROR' for item in detail['fallback_trace'])
+    assert all(item['failure_message'] == 'The provider could not be reached.' for item in detail['fallback_trace'])
     assert 'secret provider detail' not in str(detail)
+
+
+@pytest.mark.parametrize(('route', 'error', 'reason'), [
+    (Route.CLOUD, ProviderAuthenticationError('secret'), 'AUTH_ERROR'),
+    (Route.CLOUD, ProviderRateLimitError('secret'), 'RATE_LIMIT'),
+    (Route.CLOUD, ProviderTimeoutError('secret'), 'TIMEOUT'),
+    (Route.CLOUD, ProviderUnavailableError('secret'), 'NETWORK_ERROR'),
+    (Route.LOCAL, ModelNotFoundError('secret'), 'LOCAL_MODEL_UNAVAILABLE'),
+    (Route.CLOUD, RuntimeError('secret'), 'UNKNOWN'),
+])
+def test_attempt_record_classifies_secret_free_failure(route, error, reason):
+    decision = RoutingDecision(
+        route, 'local' if route is Route.LOCAL else 'cloud', 'model', 'test',
+        ['general'], 0.1, [], 0.0,
+    )
+
+    record = main._attempt_record(decision, 'failed', error)
+
+    assert record['source'] == ('local_model' if route is Route.LOCAL else 'cloud_provider')
+    assert record['failure_reason'] == reason
+    assert 'secret' not in str(record)
 
 
 def test_local_to_cloud_fallback_after_quality_rejection(tmp_path, monkeypatch):
@@ -104,7 +133,7 @@ def test_local_to_cloud_fallback_after_quality_rejection(tmp_path, monkeypatch):
         async def complete_for_model(self, _prompt, _system, model_id):
             calls.append(model_id)
             if model_id == 'zevora':
-                return '', {}
+                raise ProviderUnavailableError('local model is not loaded')
             return 'cloud recovery', {'input_tokens': 1, 'output_tokens': 2}
 
     monkeypatch.setattr(main, 'store', Store(tmp_path / 'agent.db'))
@@ -122,6 +151,71 @@ def test_local_to_cloud_fallback_after_quality_rejection(tmp_path, monkeypatch):
     assert calls == ['zevora', 'cloud-model']
     assert [item['route'] for item in result['fallback_trace']] == ['LOCAL', 'CLOUD']
     assert [item['status'] for item in result['fallback_trace']] == ['failed', 'success']
+    assert result['fallback_trace'][0]['failure_reason'] == 'LOCAL_MODEL_UNAVAILABLE'
+
+
+def test_auto_uses_healthy_local_first_for_simple_prompt(tmp_path, monkeypatch):
+    models = [_model('local', 'zevora'), _model('cloud', 'cloud-model')]
+    calls = []
+
+    class Registry:
+        def list(self):
+            return models
+
+    class Provider:
+        async def complete_for_model(self, _prompt, _system, model_id):
+            calls.append(model_id)
+            return f'{model_id} response', {'input_tokens': 1, 'output_tokens': 2}
+
+    monkeypatch.setattr(main, 'store', Store(tmp_path / 'agent.db'))
+    monkeypatch.setattr(main, 'model_registry', Registry())
+    monkeypatch.setattr(main, 'get_provider', lambda _name: Provider())
+    monkeypatch.setattr(main.settings, 'cloud_fallback', True)
+    monkeypatch.setattr(main.settings, 'routing_mode', 'AUTO')
+    monkeypatch.setattr(
+        'agent.routing.hybrid_router.provider_policy',
+        lambda _name: {'enabled': True, 'routing_priority': 50, 'default_model': ''},
+    )
+
+    result = asyncio.run(main._cloud_completion('explain this', 'be concise'))
+
+    assert result['response'] == 'zevora response'
+    assert calls == ['zevora']
+    assert result['fallback_trace'][0]['source'] == 'local_model'
+
+
+def test_auto_reports_local_and_cloud_failures_together(tmp_path, monkeypatch):
+    models = [_model('local', 'zevora'), _model('cloud', 'cloud-model')]
+
+    class Registry:
+        def list(self):
+            return models
+
+    class Provider:
+        async def complete_for_model(self, _prompt, _system, model_id):
+            if model_id == 'zevora':
+                raise ProviderUnavailableError('local secret')
+            raise ProviderAuthenticationError('cloud secret')
+
+    monkeypatch.setattr(main, 'store', Store(tmp_path / 'agent.db'))
+    monkeypatch.setattr(main, 'model_registry', Registry())
+    monkeypatch.setattr(main, 'get_provider', lambda _name: Provider())
+    monkeypatch.setattr(main.settings, 'cloud_fallback', True)
+    monkeypatch.setattr(main.settings, 'routing_mode', 'AUTO')
+    monkeypatch.setattr(
+        'agent.routing.hybrid_router.provider_policy',
+        lambda _name: {'enabled': True, 'routing_priority': 50, 'default_model': ''},
+    )
+
+    with pytest.raises(main.HTTPException) as caught:
+        asyncio.run(main._cloud_completion('explain this', 'be concise'))
+
+    trace = caught.value.detail['fallback_trace']
+    assert [item['source'] for item in trace] == ['local_model', 'cloud_provider']
+    assert [item['failure_reason'] for item in trace] == [
+        'LOCAL_MODEL_UNAVAILABLE', 'AUTH_ERROR',
+    ]
+    assert 'secret' not in str(trace)
 
 
 def test_cloud_to_local_fallback_after_cloud_failure(tmp_path, monkeypatch):

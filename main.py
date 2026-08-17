@@ -19,6 +19,14 @@ from agent.memory.store import Store
 from agent.models.manager import LocalIntelligenceManager
 from agent.models.registry import ModelRegistry
 from agent.providers.discovery import ProviderDiscovery
+from agent.providers.errors import (
+    ModelNotFoundError,
+    ProviderAuthenticationError,
+    ProviderError,
+    ProviderRateLimitError,
+    ProviderTimeoutError,
+    ProviderUnavailableError,
+)
 from agent.providers.local_provider import local_runtime_status
 from agent.providers.registry import get_provider
 from agent.providers.service import ProviderService
@@ -974,6 +982,23 @@ async def _provider_completion(candidate, prompt: str, system: str,
     return await provider.complete(prompt, system)
 
 
+def _failure_reason(candidate, error: Exception) -> tuple[str, str]:
+    """Return a stable, secret-free failure classification for the chat UI."""
+    if isinstance(error, ProviderAuthenticationError):
+        return 'AUTH_ERROR', 'API key is missing, invalid, or expired.'
+    if isinstance(error, ProviderRateLimitError):
+        return 'RATE_LIMIT', 'Provider quota or rate limit was reached.'
+    if isinstance(error, (ProviderTimeoutError, asyncio.TimeoutError, TimeoutError)):
+        return 'TIMEOUT', 'The model request timed out.'
+    if candidate.route is Route.LOCAL and isinstance(
+        error, (ProviderUnavailableError, ModelNotFoundError, ProviderError, OSError)
+    ):
+        return 'LOCAL_MODEL_UNAVAILABLE', 'The local model is not loaded or unavailable.'
+    if isinstance(error, (ProviderUnavailableError, ConnectionError, OSError)):
+        return 'NETWORK_ERROR', 'The provider could not be reached.'
+    return 'UNKNOWN', 'The model could not complete this request.'
+
+
 def _attempt_record(candidate, status: str, error: Exception | None = None) -> dict:
     record = {
         'source': 'local_model' if candidate.route is Route.LOCAL else 'cloud_provider',
@@ -981,7 +1006,12 @@ def _attempt_record(candidate, status: str, error: Exception | None = None) -> d
         'model': candidate.model_id or '', 'status': status,
     }
     if error is not None:
-        record['error'] = type(error).__name__
+        failure_reason, failure_message = _failure_reason(candidate, error)
+        record.update({
+            'error': type(error).__name__,
+            'failure_reason': failure_reason,
+            'failure_message': failure_message,
+        })
     return record
 
 

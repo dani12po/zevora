@@ -38,9 +38,10 @@ export async function api(path, options = {}) {
     });
     const data = await response.json().catch(() => ({error: {message: `HTTP ${response.status}`}}));
     if (!response.ok) {
-      const payload = data.error || {};
-      const error = new Error(payload.message || data.detail || 'Gateway request failed');
-      Object.assign(error, payload);
+      const payload = data.detail || data.error || {};
+      const normalized = typeof payload === 'object' ? payload : {message: String(payload)};
+      const error = new Error(normalized.message || 'Gateway request failed');
+      Object.assign(error, normalized);
       throw error;
     }
     return data;

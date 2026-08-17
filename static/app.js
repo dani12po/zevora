@@ -1,6 +1,7 @@
 import {$, api, navigate, registerRoutes, render, setSidebarOpen} from './core.js';
 import {checkGateway, createProject, loadProject, pickProject, refreshProjects, renderChat, renderComposerItems, syncWorkspaceAccess, wireChatEvents} from './chat.js';
 import {confirmRenameChat, newChat, refreshSidebarChats, renderChatVault} from './chats.js';
+import {wireMarkdownActions} from './markdown.js';
 import {renderDocs} from './docs.js';
 import {renderProviders} from './providers.js';
 import {renderLocalAI} from './local-ai.js';
@@ -79,6 +80,7 @@ function wireShellEvents() {
     if (event.ctrlKey && event.key.toLowerCase() === 'n') { event.preventDefault(); newChat(); }
   });
   wireChatEvents();
+  wireMarkdownActions($('messages'));
 }
 
 setChatSectionCollapsed(localStorage.getItem('zevora.sidebar.chatsCollapsed') === 'true');
