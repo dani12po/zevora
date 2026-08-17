@@ -59,6 +59,27 @@ def test_general_task_routes_local_first():
     assert candidates[0].provider == 'local'
 
 
+def test_healthy_cloud_candidate_remains_across_sequential_prompts(monkeypatch):
+    nvidia = {**CHEAP, 'provider': 'nvidia', 'model_id': 'meta/llama-3.1-8b-instruct'}
+    monkeypatch.setattr(
+        'agent.routing.hybrid_router.provider_policy',
+        lambda name: {
+            'enabled': name in {'local', 'nvidia'},
+            'routing_priority': 90,
+            'default_model': nvidia['model_id'] if name == 'nvidia' else 'zevora',
+        },
+    )
+    router = AdaptiveHybridRouter()
+
+    first = router.candidates('test', [LOCAL, nvidia])
+    second = router.candidates('kamu bisa apa saja', [LOCAL, nvidia])
+
+    for candidates in (first, second):
+        assert [(item.route, item.provider) for item in candidates] == [
+            (Route.LOCAL, 'local'), (Route.CLOUD, 'nvidia'),
+        ]
+
+
 def test_complex_architecture_task_routes_cloud_first():
     candidates = AdaptiveHybridRouter().candidates(
         'migrate and redesign the whole project architecture across all modules',

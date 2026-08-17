@@ -349,7 +349,7 @@ def test_static_chat_guidance_and_docs_contract():
     css = (static / 'styles.css').read_text(encoding='utf-8')
 
     assert 'id="nav-docs"' in html
-    assert 'Local Intelligence had no exact answer' in javascript
+    assert 'No configured AI model was able to respond.' in javascript
     assert 'href="/docs"' in html
     assert 'id="workspace-access"' in html
     assert 'id="composer-open-project"' in html

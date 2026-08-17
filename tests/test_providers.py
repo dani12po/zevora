@@ -4,7 +4,9 @@ import httpx
 import pytest
 
 from agent.config import settings
+from agent.models.registry import ModelRegistry
 from agent.providers.anthropic_provider import AnthropicProvider
+from agent.providers.discovery import ProviderDiscovery
 from agent.providers.errors import (
     InvalidRequestError,
     ModelNotFoundError,
@@ -145,6 +147,27 @@ def test_native_capability_metadata_respects_vision_policy(monkeypatch):
     assert 'vision' not in gemini['capabilities']
     assert anthropic['supports_vision'] is True
     assert 'vision' in anthropic['capabilities']
+
+
+def test_disabled_provider_refresh_invalidates_cached_healthy_models(tmp_path, monkeypatch):
+    registry = ModelRegistry(tmp_path / 'models.db')
+    registry.upsert({
+        'provider': 'nvidia', 'model_id': 'model-a', 'availability': 'verified',
+        'health_status': 'healthy', 'capabilities': ['general'],
+    })
+    monkeypatch.setattr(
+        'agent.providers.discovery.configured_providers',
+        lambda: [{'provider': 'nvidia', 'configured': True, 'enabled': False}],
+    )
+
+    result = asyncio.run(ProviderDiscovery(registry).refresh('nvidia'))
+
+    assert result == [{
+        'provider': 'nvidia', 'health_status': 'disabled', 'models_discovered': 0,
+    }]
+    cached = registry.list('nvidia')[0]
+    assert cached['health_status'] == 'disabled'
+    assert cached['availability'] == 'disabled'
 
 
 def test_native_multimodal_rejects_disabled_vision(monkeypatch):

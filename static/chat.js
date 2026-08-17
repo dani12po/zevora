@@ -40,7 +40,7 @@ export function addStructuredAction(event){event.preventDefault();try{if(state.p
 function showApproval(request,error){state.pendingApprovalRequest={...request,actions:request.actions.map(action=>({...action})),approvalIndexes:(error.pending_approvals||[]).map(item=>Number(item.index)).filter(Number.isInteger)};$('approval-list').innerHTML=(error.pending_approvals||[]).map(item=>`<div class="approval-item"><b>${escapeHtml(item.tool)}</b><span>${escapeHtml(item.purpose||'Requested by the agent')}</span><pre>${escapeHtml(JSON.stringify(item.arguments||{},null,2))}</pre></div>`).join('')||'<p>No approval details were returned.</p>';$('approval-dialog').showModal();}
 function fallbackStatus(data){if(data.reason==='EXACT_CACHE_HIT')return'Completed - answered by Local Intelligence cache';const winner=(data.fallback_trace||[]).find((item,index)=>index>0&&item.status==='success');return winner?`Completed - recovered with ${winner.provider}${winner.model?` / ${winner.model}`:''}`:'Completed';}
 function resizePrompt(){const prompt=$('prompt');prompt.style.height='auto';prompt.style.height=`${Math.min(prompt.scrollHeight,220)}px`;}
-function failureTitle(error){const failed=error.fallback_trace||[];if(failed.length===1&&failed[0].source==='local_model')return'**Local Intelligence is unavailable**';if(failed.length&&failed.every(item=>item.source==='cloud_provider'))return'**All cloud providers failed**';if(failed.length)return'**Local Intelligence and cloud providers failed**';return `**${error.message||'The request could not be completed'}**`;}
+function failureTitle(error){if(error.code==='AI_EXECUTION_ERROR')return'**AI response unavailable**';if(error.code==='PROJECT_REQUIRED')return'**Project folder required**';if(error.code==='ACTION_FAILED')return'**Action failed**';return'**The request could not be completed**';}
 
 export async function send(replay=null){
   const content=replay?.content||$('prompt').value.trim();
@@ -69,7 +69,7 @@ export async function send(replay=null){
     await refreshSidebarChats();
   }catch(error){
     waiting?.remove();
-    const readable={PROJECT_REQUIRED:'Open a project folder first. The agent cannot access drive files from chat-only mode.',ACTION_FAILED:'The requested action failed. No success was reported.',AI_EXECUTION_ERROR:error.message||'Local Intelligence had no exact answer and all available AI providers failed.'};
+    const readable={PROJECT_REQUIRED:'Open a project folder first. The agent cannot access drive files from chat-only mode.',ACTION_FAILED:'The requested action failed. No success was reported.',AI_EXECUTION_ERROR:error.message||'No configured AI model was able to respond.'};
     const explanation=readable[error.code]||userErrorMessage(error);
     $('route-status').textContent=error.code==='APPROVAL_REQUIRED'?'Waiting for your approval':`Stopped - ${explanation}`;
     if(error.code==='APPROVAL_REQUIRED'){

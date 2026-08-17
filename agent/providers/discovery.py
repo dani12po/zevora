@@ -39,10 +39,13 @@ class ProviderDiscovery:
         for name in names:
             configured = next((item for item in configured_providers() if item['provider'] == name), None)
             if not configured or not configured['enabled']:
+                self.registry.set_provider_health(name, 'disabled')
                 output.append({'provider': name, 'health_status': 'disabled', 'models_discovered': 0})
                 continue
             provider = get_provider(name)
             if not getattr(provider, 'configured', lambda: False)():
+                self.registry.set_provider_health(name, 'unconfigured')
+                output.append({'provider': name, 'health_status': 'unconfigured', 'models_discovered': 0})
                 continue
             try:
                 healthy = await provider.health_check()
@@ -79,9 +82,10 @@ class ProviderDiscovery:
                 )
                 for item in models
             ]
-            # Only replace if we actually got models — preserve stale data on empty list.
             if normalized:
                 self.registry.replace_provider(name, normalized)
+            else:
+                self.registry.set_provider_health(name, 'unavailable')
             output.append({
                 'provider': name,
                 'health_status': 'healthy' if healthy else 'unavailable',

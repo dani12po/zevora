@@ -1015,6 +1015,37 @@ def _attempt_record(candidate, status: str, error: Exception | None = None) -> d
     return record
 
 
+def _fallback_failure_message(fallback_trace: list[dict]) -> str:
+    """Describe only the provider classes that were actually attempted."""
+    failed = [item for item in fallback_trace if item.get('status') == 'failed']
+    local_attempted = any(item.get('source') == 'local_model' for item in failed)
+    cloud_names = list(dict.fromkeys(
+        str(item.get('provider') or 'cloud').strip()
+        for item in failed if item.get('source') == 'cloud_provider'
+    ))
+    if local_attempted and not cloud_names:
+        return (
+            'Local Intelligence gagal, dan tidak ada provider cloud yang terkonfigurasi '
+            'untuk fallback. Tambahkan API key di halaman Providers agar ada cadangan otomatis.'
+        )
+    if local_attempted:
+        providers = ', '.join(cloud_names)
+        return (
+            f'Local Intelligence dan {len(cloud_names)} provider cloud ({providers}) '
+            'semuanya gagal merespons.'
+        )
+    if cloud_names:
+        providers = ', '.join(cloud_names)
+        return (
+            f'{len(cloud_names)} provider cloud ({providers}) semuanya gagal merespons. '
+            'Local Intelligence tidak dicoba karena dinonaktifkan atau tidak dikonfigurasi.'
+        )
+    return (
+        'Tidak ada model AI lokal atau provider cloud yang siap digunakan. '
+        'Periksa Local Intelligence atau konfigurasi provider di halaman Providers.'
+    )
+
+
 async def _cloud_completion(prompt: str, system: str, requested_format: str = '',
                             response_validator=None) -> dict:
     """Run hybrid completion; legacy name retained for caller compatibility."""
@@ -1023,7 +1054,7 @@ async def _cloud_completion(prompt: str, system: str, requested_format: str = ''
     if not candidates:
         raise HTTPException(503, {
             'code': 'AI_EXECUTION_ERROR',
-            'message': 'No configured local or cloud model is available for reasoning.',
+            'message': _fallback_failure_message([]),
             'fallback_trace': [],
         })
 
@@ -1071,7 +1102,7 @@ async def _cloud_completion(prompt: str, system: str, requested_format: str = ''
 
     raise HTTPException(503, {
         'code': 'AI_EXECUTION_ERROR',
-        'message': 'All capable local and cloud model alternatives failed.',
+        'message': _fallback_failure_message(fallback_trace),
         'fallback_trace': fallback_trace,
     })
 
@@ -1444,10 +1475,7 @@ async def task(body: TaskRequest):
     if not candidates:
         raise HTTPException(503, {
             'code': 'AI_EXECUTION_ERROR',
-            'message': (
-                'No capable local or cloud AI provider is currently available. '
-                'Check the local runtime or configure a cloud provider.'
-            ),
+            'message': _fallback_failure_message(fallback_trace),
             'fallback_trace': fallback_trace,
         })
 
@@ -1482,7 +1510,7 @@ async def task(body: TaskRequest):
     if response is None or usage is None or decision is None:
         raise HTTPException(503, {
             'code': 'AI_EXECUTION_ERROR',
-            'message': 'All capable local and cloud model alternatives failed.',
+            'message': _fallback_failure_message(fallback_trace),
             'fallback_trace': fallback_trace,
         })
 

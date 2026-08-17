@@ -90,6 +90,10 @@ def test_cloud_completion_reports_local_and_all_failed_alternatives(tmp_path, mo
 
     detail = caught.value.detail
     assert detail['code'] == 'AI_EXECUTION_ERROR'
+    assert detail['message'] == (
+        '2 provider cloud (first, second) semuanya gagal merespons. '
+        'Local Intelligence tidak dicoba karena dinonaktifkan atau tidak dikonfigurasi.'
+    )
     assert len(detail['fallback_trace']) == 2
     assert all(item['route'] == 'CLOUD' for item in detail['fallback_trace'])
     assert all(item['source'] == 'cloud_provider' for item in detail['fallback_trace'])
@@ -210,12 +214,30 @@ def test_auto_reports_local_and_cloud_failures_together(tmp_path, monkeypatch):
     with pytest.raises(main.HTTPException) as caught:
         asyncio.run(main._cloud_completion('explain this', 'be concise'))
 
-    trace = caught.value.detail['fallback_trace']
+    detail = caught.value.detail
+    trace = detail['fallback_trace']
+    assert detail['message'] == (
+        'Local Intelligence dan 1 provider cloud (cloud) semuanya gagal merespons.'
+    )
     assert [item['source'] for item in trace] == ['local_model', 'cloud_provider']
     assert [item['failure_reason'] for item in trace] == [
         'LOCAL_MODEL_UNAVAILABLE', 'AUTH_ERROR',
     ]
     assert 'secret' not in str(trace)
+
+
+def test_local_only_failure_message_does_not_claim_cloud_was_tried():
+    trace = [{
+        'source': 'local_model', 'route': 'LOCAL', 'provider': 'local',
+        'model': 'zevora', 'status': 'failed',
+    }]
+
+    message = main._fallback_failure_message(trace)
+
+    assert message == (
+        'Local Intelligence gagal, dan tidak ada provider cloud yang terkonfigurasi '
+        'untuk fallback. Tambahkan API key di halaman Providers agar ada cadangan otomatis.'
+    )
 
 
 def test_cloud_to_local_fallback_after_cloud_failure(tmp_path, monkeypatch):

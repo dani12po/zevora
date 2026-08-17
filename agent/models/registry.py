@@ -62,5 +62,21 @@ class ModelRegistry:
                 ) for item in payloads],
             )
 
+    def set_provider_health(self, provider: str, health_status: str) -> None:
+        """Keep cached discovery rows from advertising stale provider health."""
+        with self.connection() as conn:
+            rows = conn.execute(
+                'SELECT model_id, metadata FROM models WHERE provider=?', (provider,)
+            ).fetchall()
+            for model_id, raw_metadata in rows:
+                metadata = json.loads(raw_metadata)
+                metadata['health_status'] = health_status
+                if health_status != 'healthy':
+                    metadata['availability'] = health_status
+                conn.execute(
+                    'UPDATE models SET metadata=? WHERE provider=? AND model_id=?',
+                    (json.dumps(metadata, sort_keys=True), provider, model_id),
+                )
+
     def installed_local_packages(self) -> list[dict]:
         return [item for item in self.list('local') if item.get('installed') is True]
