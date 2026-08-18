@@ -1,4 +1,4 @@
-import {$, badge, exposeHandlers, pageWrap, setPanel, state} from './core.js?v=20260818-8';
+import {$, badge, exposeHandlers, pageWrap, setPanel, state} from './core.js?v=20260818-9';
 
 let openChatPage = async () => {};
 

@@ -407,9 +407,16 @@ menu button[value="default"]:hover{background:var(--accent-hover)}
 .save-msg.error-text{color:var(--red)}
 .save-msg.warning-text{color:var(--yellow);margin-bottom:0}
 .provider-manager{margin-bottom:16px;border-block:1px solid var(--border);background:var(--surface);padding:0 16px 16px}
+.provider-setup-guide{margin-top:12px;padding:10px 12px;border:1px solid var(--border);border-left:3px solid var(--cyan);background:var(--surface2);color:var(--text2);font-size:11px;line-height:1.5}
+.provider-setup-guide b{color:var(--text);font-size:12px}
+.provider-setup-guide ol{margin:6px 0 6px 18px;padding:0}
+.provider-setup-guide code{color:var(--cyan);font-family:var(--font-mono)}
+.provider-setup-guide p{margin:0;color:var(--yellow)}
 .provider-form-grid{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:10px;margin:14px 0}
 .provider-form-grid label,.provider-source-label{display:grid;gap:5px;color:var(--text2);font-size:11px;min-width:0}
 .provider-form-grid input,.provider-form-grid select{min-width:0;width:100%;font-size:12px}
+.provider-form-grid .field-help,.provider-source-label .field-help{font-size:10px;line-height:1.3;color:var(--text3)}
+.provider-form-grid input::placeholder,.provider-source-label textarea::placeholder{color:var(--text3);opacity:1}
 .provider-source-label textarea{width:100%;min-height:150px;max-height:360px;resize:vertical;font:11px/1.5 var(--font-mono)}
 .provider-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;flex-wrap:wrap}
 .custom-provider-list{display:grid;gap:0;margin-top:14px;border-top:1px solid var(--border)}

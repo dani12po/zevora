@@ -1,4 +1,4 @@
-import {$, api, badge, escapeHtml, exposeHandlers, pageWrap, setPanel, userErrorMessage} from './core.js?v=20260818-8';
+import {$, api, badge, escapeHtml, exposeHandlers, pageWrap, setPanel, userErrorMessage} from './core.js?v=20260818-9';
 
 export async function renderMCP() {
   const tools = await api('/api/tools');

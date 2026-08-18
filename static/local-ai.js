@@ -1,4 +1,4 @@
-import {api, badge, escapeHtml, fmtBytes, pageWrap, setPanel, stateIndicator} from './core.js?v=20260818-8';
+import {api, badge, escapeHtml, fmtBytes, pageWrap, setPanel, stateIndicator} from './core.js?v=20260818-9';
 
 export async function renderLocalAI() {
   const [health, storage, memory, stats, intelligence, evolution] = await Promise.all([

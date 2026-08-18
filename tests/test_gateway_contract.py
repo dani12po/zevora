@@ -574,14 +574,15 @@ def test_static_frontend_module_and_theme_contract():
     html = (static / 'index.html').read_text(encoding='utf-8')
     app_javascript = (static / 'app.js').read_text(encoding='utf-8')
     css = (static / 'styles.css').read_text(encoding='utf-8')
-    assert re.search(r'<script\s+type="module"\s+src="/static/app\.js\?v=20260818-8"', html)
+    providers = (static / 'providers.js').read_text(encoding='utf-8')
+    assert re.search(r'<script\s+type="module"\s+src="/static/app\.js\?v=20260818-9"', html)
     assert "fetch('/health', {cache: 'no-store'})" in html
     assert 'Gateway connected' in html
     assert 'family=Inter' in html and 'family=JetBrains+Mono' in html
     assert 'onclick=' not in html
-    assert "from './core.js?v=20260818-8'" in app_javascript
-    assert "from './chat.js?v=20260818-8'" in app_javascript
-    assert "from './chats.js?v=20260818-8'" in app_javascript
+    assert "from './core.js?v=20260818-9'" in app_javascript
+    assert "from './chat.js?v=20260818-9'" in app_javascript
+    assert "from './chats.js?v=20260818-9'" in app_javascript
 
     routes = {
         '/': 'renderChat', '/chats': 'renderChatVault', '/docs': 'renderDocs',
@@ -614,6 +615,10 @@ def test_static_frontend_module_and_theme_contract():
     assert '.route-enter{animation:route-enter 160ms ease-out both}' in css
     assert '.state-indicator-local' in css and '.state-indicator-cloud' in css
     assert '*::-webkit-scrollbar-thumb' in css
+    assert '.provider-setup-guide' in css
+    assert 'Quick setup' in providers
+    assert 'Credential value' in providers
+    assert 'AGENTROUTER_API_KEY' in providers
 
     chats_javascript = (static / 'chats.js').read_text(encoding='utf-8')
     chat_javascript = (static / 'chat.js').read_text(encoding='utf-8')
