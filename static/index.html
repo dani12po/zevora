@@ -128,10 +128,41 @@
     </div>
     <div class="topbar-right">
       <button id="gateway" class="gateway-pill" type="button">Checking…</button>
+      <button id="workspace-sidebar-toggle" class="icon-action workspace-only-control" type="button" title="Toggle navigation" aria-label="Toggle navigation">☰</button>
     </div>
   </header>
 
-  <section id="messages" class="messages">
+  <section id="main-chat-host" class="main-chat-host"></section>
+
+  <section id="coding-workspace" class="coding-workspace hidden" aria-label="Coding workspace">
+    <section class="workspace-editor-column">
+      <div id="workspace-filesystem" class="workspace-filesystem"></div>
+      <div class="workspace-terminal" id="workspace-terminal">
+        <div class="workspace-terminal-resizer" id="workspace-terminal-resizer" title="Resize terminal" aria-hidden="true"></div>
+        <header class="workspace-terminal-header">
+          <b>Terminal</b>
+          <div class="workspace-terminal-actions">
+            <button id="workspace-terminal-clear" class="icon-action" type="button" title="Clear terminal" aria-label="Clear terminal">⌫</button>
+            <button id="workspace-terminal-kill" class="icon-action hidden" type="button" title="Kill command" aria-label="Kill command">■</button>
+            <button id="workspace-terminal-toggle" class="icon-action" type="button" title="Collapse terminal" aria-label="Collapse terminal">⌄</button>
+          </div>
+        </header>
+        <div id="workspace-terminal-output" class="workspace-terminal-output" aria-live="polite"><span class="muted-copy">Terminal ready for the selected workspace.</span></div>
+        <form id="workspace-terminal-form" class="workspace-terminal-form">
+          <span class="terminal-prompt">></span>
+          <input id="workspace-terminal-command" type="text" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="python -m pytest">
+          <button class="icon-action" type="submit" title="Run command" aria-label="Run command">▶</button>
+        </form>
+      </div>
+    </section>
+    <aside id="chat-dock" class="chat-dock" aria-label="Workspace chat">
+      <div id="chat-dock-resizer" class="chat-dock-resizer" title="Resize chat" aria-hidden="true"></div>
+      <header class="chat-dock-header">
+        <b>Chat</b>
+        <button id="chat-dock-toggle" class="icon-action" type="button" title="Close chat" aria-label="Close chat">›</button>
+      </header>
+      <div id="chat-dock-content" class="chat-dock-content">
+      <section id="messages" class="messages">
     <div class="empty-state">
       <div class="empty-icon">
         <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
@@ -150,11 +181,11 @@
       </div>
       <a class="empty-docs-link" href="/docs" data-route>Read the quick start →</a>
     </div>
-  </section>
+      </section>
 
-  <section id="audit-result" class="audit hidden" aria-live="polite"></section>
+      <section id="audit-result" class="audit hidden" aria-live="polite"></section>
 
-  <form id="composer" class="composer">
+      <form id="composer" class="composer">
     <div id="workspace-access" class="workspace-access is-chat" aria-live="polite">
       <b>Chat only</b>
       <span>Select a project folder before asking the agent to read or change files.</span>
@@ -187,7 +218,12 @@
         </button>
       </div>
     </div>
-  </form>
+      </form>
+      </div>
+      <button id="chat-dock-open" class="chat-dock-open hidden" type="button">Open Chat</button>
+    </aside>
+  </section>
+
 </main>
 </div>
 

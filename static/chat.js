@@ -179,9 +179,26 @@ export async function regenerateResponse(content, meta, message, originalText) {
 
 configureMessageActions({regenerate: regenerateResponse});
 
+async function routeCodingPrompt(content) {
+  if (location.pathname === '/filesystem' || !content) return;
+  try {
+    const decision = await api(`/api/route?prompt=${encodeURIComponent(content)}`);
+    const taskTypes = new Set(decision.task_type || []);
+    const tools = decision.tools || [];
+    const codingRequest = taskTypes.has('coding')
+      || taskTypes.has('debugging')
+      || taskTypes.has('tool_task')
+      || tools.some(tool => tool === 'filesystem.read' || tool === 'terminal.execute' || tool === 'project.create');
+    if (codingRequest) await navigate('/filesystem');
+  } catch (_) {
+    // Navigation is an enhancement; the canonical chat request remains available.
+  }
+}
+
 export async function send(replay=null){
   const content=replay?.content||$('prompt').value.trim();
   if(!content||state.isSending)return;
+  await routeCodingPrompt(content);
   if(!state.gatewayReady&&!await checkGateway()){$('route-status').textContent='Gateway offline';return;}
   const request=replay||{content,attachments:state.pendingAttachments.map(({name,media_type,data_base64})=>({name,media_type,data_base64})),actions:state.pendingActions.map(action=>({...action}))};
   state.isSending=true;syncComposerState();let userMessage=null,waiting=null,stopProgress=()=>{};
@@ -207,6 +224,7 @@ export async function send(replay=null){
     stopProgress();state.activeChat=data.conversation_id;replaceAssistantMessage(waiting,data.response,{...data,regenerate_content:content});waiting.classList.remove('is-typing');
     state.pendingAttachments=[];state.pendingActions=[];state.pendingApprovalRequest=null;renderComposerItems();
     $('route-status').textContent=data.reason==='TOOLS_EXECUTED'?'Completed - changes were written to the selected folder':fallbackStatus(data);
+    window.dispatchEvent(new CustomEvent('zevora:workflow-complete', {detail:data}));
     await refreshSidebarChats();
   }catch(error){
     stopProgress();waiting?.remove();

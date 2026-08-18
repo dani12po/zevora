@@ -523,6 +523,40 @@ def test_filesystem_endpoints_preserve_gateway_contract(tmp_path, monkeypatch):
     assert project_read.json()['next_offset'] is None
 
 
+def test_project_file_write_endpoint_is_rooted_and_returns_receipt(tmp_path, monkeypatch):
+    manager = WorkspaceManager(tmp_path / 'workspace.db')
+    root = tmp_path / 'project'
+    root.mkdir()
+    project = manager.load(root)
+    monkeypatch.setattr(main, 'workspace_manager', manager)
+    client = TestClient(main.app)
+
+    response = client.put(
+        f"/api/projects/{project['id']}/files/write",
+        json={'path': 'src/main.py', 'content': 'print(1)\n'},
+    )
+    assert response.status_code == 200
+    assert response.json()['ok'] is True
+    assert response.json()['path'] == 'src/main.py'
+    assert (root / 'src' / 'main.py').read_text(encoding='utf-8') == 'print(1)\n'
+
+    escaped = client.put(
+        f"/api/projects/{project['id']}/files/write",
+        json={'path': '../outside.py', 'content': 'blocked'},
+    )
+    assert escaped.status_code == 400
+    assert not (tmp_path / 'outside.py').exists()
+
+
+def test_route_endpoint_exposes_coding_and_tool_hints():
+    response = TestClient(main.app).get('/api/route', params={'prompt': 'Fix the Python bug and run tests'})
+    assert response.status_code == 200
+    body = response.json()
+    assert 'coding' in body['task_type']
+    assert 'debugging' in body['task_type']
+    assert 'terminal.execute' in body['tools']
+
+
 def test_filesystem_endpoint_blocks_path_escape(tmp_path, monkeypatch):
     manager = WorkspaceManager(tmp_path / 'workspace.db')
     root = tmp_path / 'project'

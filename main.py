@@ -55,6 +55,7 @@ from agent.storage.context_economy import (
 from agent.storage.maintenance import MaintenanceScheduler
 from agent.storage.storage_manager import StorageManager
 from agent.tools.mcp_gateway import LocalMCPGateway
+from agent.tools.terminal_sessions import TerminalSessionManager
 
 # ── Singletons ────────────────────────────────────────────────────────────────
 store         = Store(settings.database_file)
@@ -75,6 +76,7 @@ storage_manager   = StorageManager(ROOT)
 model_registry    = ModelRegistry(ROOT / 'data' / 'database' / 'model_registry.db')
 provider_service  = ProviderService()
 mcp_gateway       = LocalMCPGateway()
+terminal_sessions = TerminalSessionManager()
 hybrid_router     = AdaptiveHybridRouter()
 workspace_manager = WorkspaceManager(ROOT / 'data' / 'database' / 'workspace.db')
 _PROVIDER_CONFIG_LOCK = Lock()
@@ -204,6 +206,15 @@ class PlanRequest(BaseModel):
     project_id: int = Field(gt=0)
 class MCPToolUpdateRequest(BaseModel):
     enabled: bool
+class TerminalSessionRequest(BaseModel):
+    project_id: int = Field(gt=0)
+    command: str = Field(min_length=1, max_length=4096)
+    cwd: str = Field(default='', max_length=4096)
+    timeout: int = Field(default=120, ge=1, le=600)
+    approved: bool = False
+class FileWriteRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=4096)
+    content: str = Field(max_length=2_000_000)
 class IndexRequest(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
 class ProjectCreateRequest(BaseModel):
@@ -835,6 +846,49 @@ def filesystem_file(
         'truncated': payload['next_offset'] is not None,
     }
 
+@app.post('/api/terminal/sessions')
+def start_terminal_session(body: TerminalSessionRequest):
+    project = workspace_manager.get(body.project_id)
+    if not project:
+        raise HTTPException(404, {'code': 'PROJECT_NOT_FOUND', 'message': 'Selected project was not found.'})
+    try:
+        result = terminal_sessions.start(
+            Path(project['path']), body.command, approved=body.approved,
+            timeout=body.timeout, cwd=body.cwd,
+            preferences=workspace_manager.permissions(body.project_id),
+        )
+    except (OSError, RuntimeError, ValueError) as error:
+        raise HTTPException(400, {'code': 'TERMINAL_COMMAND_REJECTED', 'message': str(error)}) from error
+    if not result.get('ok'):
+        status = 403 if result.get('approval_required') else 400
+        raise HTTPException(status, {
+            'code': 'TERMINAL_APPROVAL_REQUIRED' if status == 403 else 'TERMINAL_COMMAND_REJECTED',
+            'message': result.get('error', 'Terminal command was rejected.'),
+            'risk': result.get('risk'),
+            'details': result.get('details', {}),
+        })
+    return result
+
+@app.get('/api/terminal/sessions/{session_id}')
+def terminal_session_status(session_id: str, after: int = Query(default=0, ge=0)):
+    result = terminal_sessions.get(session_id, after)
+    if result is None:
+        raise HTTPException(404, {'code': 'TERMINAL_SESSION_NOT_FOUND', 'message': 'Terminal session was not found.'})
+    return result
+
+@app.post('/api/terminal/sessions/{session_id}/kill')
+def kill_terminal_session(session_id: str):
+    result = terminal_sessions.kill(session_id)
+    if result is None:
+        raise HTTPException(404, {'code': 'TERMINAL_SESSION_NOT_FOUND', 'message': 'Terminal session was not found.'})
+    return {'ok': True, **result}
+
+@app.delete('/api/terminal/sessions/{session_id}')
+def clear_terminal_session(session_id: str):
+    if not terminal_sessions.clear(session_id):
+        raise HTTPException(404, {'code': 'TERMINAL_SESSION_NOT_FOUND', 'message': 'Terminal session was not found.'})
+    return {'ok': True, 'session_id': session_id}
+
 @app.get('/api/models')
 def models(provider: str | None = None): return model_registry.list(provider)
 @app.post('/api/models/refresh')
@@ -916,6 +970,24 @@ def project_file(
     except (OSError,ValueError) as error: raise HTTPException(400,str(error))
     if not result.ok: raise HTTPException(400,result.output)
     return result.output
+@app.put('/api/projects/{project_id}/files/write')
+def write_project_file(project_id: int, body: FileWriteRequest):
+    _, gateway = project_gateway(project_id)
+    try:
+        result = gateway.execute('write_file', {
+            'path': body.path,
+            'content': body.content,
+        })
+    except (OSError, ValueError) as error:
+        raise HTTPException(400, {
+            'code': 'FILE_WRITE_FAILED', 'message': str(error),
+        }) from error
+    if not result.ok:
+        raise HTTPException(400, {
+            'code': 'FILE_WRITE_FAILED',
+            'message': str(result.output),
+        })
+    return {'ok': True, **result.output}
 @app.post('/api/projects/{project_id}/audit')
 def audit_workspace_project(project_id:int):
     try: return workspace_manager.audit(project_id)

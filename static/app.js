@@ -1,4 +1,6 @@
 import {$, api, navigate, registerRoutes, render, setSidebarOpen} from './core.js?v=20260818-11';
+import {initWorkspaceShell, enterCodingWorkspace, leaveCodingWorkspace} from './workspace.js?v=20260818-12';
+import {initTerminalWorkspace} from './terminal-workspace.js?v=20260818-12';
 import {checkGateway, createProject, loadProject, pickProject, refreshProjects, renderChat, renderComposerItems, syncWorkspaceAccess, wireChatEvents} from './chat.js?v=20260818-12';
 import {confirmRenameChat, newChat, refreshSidebarChats, renderChatVault} from './chats.js?v=20260818-12';
 import {wireMarkdownActions} from './markdown.js?v=20260818-12';
@@ -14,20 +16,30 @@ import {renderCache} from './cache.js?v=20260818-10';
 import {renderUsage} from './usage.js?v=20260818-10';
 import {renderSettings} from './settings.js?v=20260818-10';
 
+const codingRoute = handler => async () => {
+  enterCodingWorkspace();
+  await handler();
+};
+
+const standardRoute = handler => async () => {
+  leaveCodingWorkspace();
+  await handler();
+};
+
 export const ROUTES = {
-  '/': renderChat,
-  '/chats': renderChatVault,
-  '/docs': renderDocs,
-  '/providers': renderProviders,
-  '/local-ai': renderLocalAI,
-  '/model-router': renderModelRouter,
-  '/mcp': renderMCP,
-  '/terminal': renderTerminal,
-  '/filesystem': renderFilesystem,
-  '/memory': renderMemory,
-  '/cache': renderCache,
-  '/usage': renderUsage,
-  '/settings': renderSettings,
+  '/': standardRoute(renderChat),
+  '/chats': standardRoute(renderChatVault),
+  '/docs': standardRoute(renderDocs),
+  '/providers': standardRoute(renderProviders),
+  '/local-ai': standardRoute(renderLocalAI),
+  '/model-router': standardRoute(renderModelRouter),
+  '/mcp': standardRoute(renderMCP),
+  '/terminal': standardRoute(renderTerminal),
+  '/filesystem': codingRoute(renderFilesystem),
+  '/memory': standardRoute(renderMemory),
+  '/cache': standardRoute(renderCache),
+  '/usage': standardRoute(renderUsage),
+  '/settings': standardRoute(renderSettings),
 };
 
 registerRoutes(ROUTES);
@@ -84,6 +96,8 @@ function wireShellEvents() {
 }
 
 setChatSectionCollapsed(localStorage.getItem('zevora.sidebar.chatsCollapsed') === 'true');
+initWorkspaceShell();
+initTerminalWorkspace();
 wireShellEvents();
 syncWorkspaceAccess();
 checkGateway();
