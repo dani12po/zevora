@@ -20,3 +20,6 @@ cache/*
 *.zip
 .vscode/
 .kiro/
+
+# Local task prompts are not part of the application source.
+prompt.txt

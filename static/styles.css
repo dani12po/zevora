@@ -396,7 +396,19 @@ menu button[value="default"]:hover{background:var(--accent-hover)}
 .approval-item span{display:block;color:var(--text2);font-size:11px;margin:2px 0 6px}
 /* ── Provider cards ──────────────────────────────────────────────────────── */
 .provider-card{display:grid;grid-template-columns:1fr auto;gap:8px 16px;align-items:start}
-.provider-card-name{font-weight:600;font-size:14px;display:flex;align-items:center;gap:8px}
+.provider-card-name{font-weight:600;font-size:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.provider-card-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:12px;align-items:start}
+.provider-card-grid>.provider-shell{min-width:0}
+.add-provider-card{display:flex;align-items:center;justify-content:flex-start;gap:12px;min-height:92px;border:1px dashed var(--border2);background:transparent;color:var(--text);cursor:pointer;text-align:left}
+.add-provider-card:hover{border-color:var(--accent);background:var(--surface2)}
+.add-provider-card b{display:block;font-size:13px}
+.add-provider-card small{display:block;color:var(--text2);font-size:11px;margin-top:4px}
+.add-provider-icon{display:grid;place-items:center;width:30px;height:30px;border:1px solid var(--border2);border-radius:50%;font-size:22px;font-weight:300;color:var(--accent)}
+.provider-custom{border-left:2px solid var(--purple)}
+.provider-runtime-details{grid-column:1/-1;margin-top:6px;border-top:1px solid var(--border);padding-top:8px}
+.provider-runtime-details>summary{cursor:pointer;color:var(--text2);font-size:11px}
+.runtime-source-row{display:flex;gap:6px;align-items:center;margin-top:8px;flex-wrap:wrap}
+.runtime-source{width:100%;min-height:120px;max-height:280px;resize:vertical;margin:8px 0 0;padding:9px;border:1px solid var(--border);background:var(--bg);color:var(--text2);font:11px/1.5 var(--font-mono);white-space:pre-wrap;overflow:auto}
 .provider-fields{grid-column:1/-1;display:grid;gap:8px;margin-top:4px}
 .provider-field{display:grid;grid-template-columns:110px 1fr auto;gap:8px;align-items:center}
 .provider-field label{font-size:11px;color:var(--text2)}
@@ -615,6 +627,7 @@ menu button[value="default"]:hover{background:var(--accent-hover)}
   .provider-save{display:grid;grid-template-columns:1fr auto}
   .provider-save .save-msg{grid-column:1/-1;max-width:none;text-align:left;overflow-wrap:anywhere}
   .provider-form-grid{grid-template-columns:1fr 1fr}
+  .provider-card-grid{grid-template-columns:1fr}
   .custom-provider-row{grid-template-columns:1fr}
   .custom-provider-row .provider-actions{justify-content:flex-start}
   .routing-select{max-width:120px}

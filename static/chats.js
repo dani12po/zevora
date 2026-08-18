@@ -1,5 +1,5 @@
-import {$, api, escapeHtml, exposeHandlers, loadingState, navigate, pageWrap, setMessages, setPanel, setSidebarOpen, state, userErrorMessage} from './core.js?v=20260818-9';
-import {renderMarkdown} from './markdown.js?v=20260818-9';
+import {$, api, escapeHtml, exposeHandlers, loadingState, navigate, pageWrap, setMessages, setPanel, setSidebarOpen, state, userErrorMessage} from './core.js?v=20260818-10';
+import {renderMarkdown} from './markdown.js?v=20260818-10';
 
 let renamingChatId = null;
 let regenerateMessage = null;

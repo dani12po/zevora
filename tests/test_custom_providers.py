@@ -115,6 +115,21 @@ def test_provider_manifest_api_masks_credentials(tmp_path, monkeypatch):
     assert secret not in response.text
 
 
+def test_runtime_source_api_returns_stored_source_without_credentials(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text("RUNTIME_KEY=runtime-secret\n", encoding="utf-8")
+    store = ProviderStore(tmp_path / "providers.json", tmp_path / "runtime")
+    source = 'print({"type": "result", "content": "ok"})\n'
+    store.save(runtime_manifest(), source)
+    monkeypatch.setattr(main, "provider_service", ProviderService(store, env_file=env_file))
+
+    response = TestClient(main.app).get("/api/provider-manifests/runtime-provider/source")
+
+    assert response.status_code == 200
+    assert response.json() == {"provider_id": "runtime-provider", "source": source}
+    assert "runtime-secret" not in response.text
+
+
 def test_script_analyzer_is_static_and_classifies_dynamic_python():
     analyzer = ScriptAnalyzer()
     analysis = analyzer.analyze(

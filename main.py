@@ -740,6 +740,14 @@ def export_provider_manifest(provider_id: str):
         raise _provider_service_error(error) from error
 
 
+@app.get('/api/provider-manifests/{provider_id}/source')
+def provider_runtime_source(provider_id: str):
+    try:
+        return {'provider_id': provider_id, 'source': provider_service.runtime_source(provider_id)}
+    except (KeyError, OSError, ValueError) as error:
+        raise _provider_service_error(error) from error
+
+
 @app.delete('/api/provider-manifests/{provider_id}')
 def delete_provider_manifest(provider_id: str):
     try:

@@ -164,6 +164,15 @@ class ProviderService:
         temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
         temporary.replace(self.env_file)
 
+    def runtime_source(self, provider_id: str) -> str:
+        manifest = self._required(provider_id)
+        if manifest.protocol != "custom-runtime" or manifest.runtime is None:
+            raise ValueError("provider has no runtime source")
+        path = self.store.script_path(manifest)
+        if not path.is_file():
+            return ""
+        return path.read_text(encoding="utf-8")
+
     @staticmethod
     def _python_example(manifest: ProviderManifest) -> str:
         env = manifest.credential.name or "PROVIDER_API_KEY"

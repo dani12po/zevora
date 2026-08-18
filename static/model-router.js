@@ -1,4 +1,4 @@
-import {api, escapeHtml, pageWrap, setPanel, stateIndicator} from './core.js?v=20260818-9';
+import {api, escapeHtml, pageWrap, setPanel, stateIndicator} from './core.js?v=20260818-10';
 
 export async function renderModelRouter() {
   const settings = await api('/api/routing/settings');
