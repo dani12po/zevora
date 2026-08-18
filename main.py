@@ -4,6 +4,7 @@ import json
 import os
 import re
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from threading import Lock
 from time import perf_counter
 import asyncio
@@ -11,7 +12,7 @@ import uuid
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from agent.config import ROOT, reload_settings, settings
@@ -56,6 +57,10 @@ from agent.tools.mcp_gateway import LocalMCPGateway
 
 # ── Singletons ────────────────────────────────────────────────────────────────
 store         = Store(settings.database_file)
+_progress_lock = Lock()
+_progress_events: dict[str, dict] = {}
+_stream_event_callback: ContextVar = ContextVar('stream_event_callback', default=None)
+_chat_runs: dict[str, asyncio.Task] = {}
 router        = ModelRouter()
 local_manager = LocalIntelligenceManager()
 intelligence_engine = LocalIntelligenceEngine(settings.database_file)
@@ -181,6 +186,7 @@ class AgentActionRequest(BaseModel):
 
 class TaskRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=20000)
+    progress_id: str | None = Field(default=None, max_length=80)
     project: str | None = Field(default=None, max_length=4096)
     system: str = Field(
         default='You are a safe, concise personal AI agent.', max_length=20_000
@@ -211,6 +217,7 @@ class ChatCreateRequest(BaseModel):
     project_id: int | None = Field(default=None, gt=0)
 class ChatMessageRequest(BaseModel):
     content: str = Field(min_length=1,max_length=20000)
+    progress_id: str | None = Field(default=None, max_length=80)
     mode: str = Field(default='auto', max_length=32)
     provider: str | None = Field(default=None, max_length=80)
     model: str | None = Field(default=None, max_length=255)
@@ -218,6 +225,7 @@ class ChatMessageRequest(BaseModel):
     actions: list[AgentActionRequest] = Field(default_factory=list, max_length=30)
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1,max_length=20000)
+    request_id: str | None = Field(default=None, max_length=80)
     conversation_id: str | None = Field(default=None, max_length=128)
     project_id: int | None = Field(default=None, gt=0)
     project_context: str | None = Field(default=None, max_length=20_000)
@@ -976,7 +984,7 @@ async def _complete_chat_turn(chat, content, body):
     return await task(TaskRequest(
         prompt=content, project=project['path'] if project else None,
         mode=body.mode, provider=body.provider, model=body.model,
-        attachments=body.attachments, actions=body.actions,
+        attachments=body.attachments, actions=body.actions, progress_id=body.progress_id,
     ))
 
 @app.post('/api/chats/{chat_id}/messages')
@@ -1012,13 +1020,34 @@ def message_feedback(chat_id: str, message_id: int, body: ChatFeedbackRequest):
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
     return {'ok': True, 'chat_id': chat_id, 'message_id': message_id, 'rating': rating}
-@app.post('/api/chat')
-async def chat(body:ChatRequest):
-    request_id='zv-'+uuid.uuid4().hex[:12]
-    chat_id=body.conversation_id
-    if not chat_id: chat_id=workspace_manager.create_chat(body.message[:80],body.project_id)['id']
-    existing=workspace_manager.get_chat(chat_id)
-    if not existing: raise HTTPException(404,'Conversation not found')
+@app.get('/api/chat/progress/{request_id}')
+def chat_progress(request_id: str):
+    with _progress_lock:
+        progress = _progress_events.get(request_id)
+    if progress is None:
+        raise HTTPException(404, 'Chat progress not found')
+    return progress
+
+
+async def _emit_stream_event(event: dict) -> None:
+    callback = _stream_event_callback.get()
+    if callback is not None:
+        await callback(event)
+
+
+def _sse_frame(event: dict) -> str:
+    return f"data: {json.dumps(event, ensure_ascii=True, separators=(',', ':'))}\n\n"
+
+
+async def _execute_chat_request(body: ChatRequest, request_id: str) -> dict:
+    _progress_start(request_id)
+    _progress_update(request_id, 'UNDERSTAND', 'Memahami permintaan Anda')
+    chat_id = body.conversation_id
+    if not chat_id:
+        chat_id = workspace_manager.create_chat(body.message[:80], body.project_id)['id']
+    existing = workspace_manager.get_chat(chat_id)
+    if not existing:
+        raise HTTPException(404, 'Conversation not found')
     if body.project_id is not None and existing['project_id'] != body.project_id:
         project = workspace_manager.get(body.project_id)
         if not project:
@@ -1026,14 +1055,128 @@ async def chat(body:ChatRequest):
         with workspace_manager.connection() as conn:
             conn.execute('UPDATE chats SET project_id=? WHERE id=?', (body.project_id, chat_id))
         existing = workspace_manager.get_chat(chat_id)
-    if existing['title']=='New chat': workspace_manager.set_title(chat_id,body.message[:80])
-    result=await chat_message(
-        chat_id, ChatMessageRequest(
-            content=body.message, mode=body.mode, provider=body.provider, model=body.model,
-            attachments=body.attachments, actions=body.actions,
+    if existing['title'] == 'New chat':
+        workspace_manager.set_title(chat_id, body.message[:80])
+    try:
+        result = await chat_message(
+            chat_id,
+            ChatMessageRequest(
+                content=body.message, mode=body.mode, provider=body.provider,
+                model=body.model, attachments=body.attachments, actions=body.actions,
+                progress_id=request_id,
+            ),
         )
+        _progress_finish(request_id)
+        return {'ok': True, **result, 'conversation_id': chat_id, 'request_id': request_id}
+    except Exception:
+        _progress_finish(request_id, 'failed')
+        raise
+
+
+async def _chat_request(body: ChatRequest) -> dict:
+    request_id = body.request_id or 'zv-' + uuid.uuid4().hex[:12]
+    current = _chat_runs.get(request_id)
+    if current is None:
+        current = asyncio.create_task(_execute_chat_request(body, request_id))
+        _chat_runs[request_id] = current
+        if len(_chat_runs) > 128:
+            for key, run in list(_chat_runs.items()):
+                if key != request_id and run.done():
+                    _chat_runs.pop(key, None)
+                if len(_chat_runs) <= 128:
+                    break
+    return await asyncio.shield(current)
+
+
+async def _stream_error(error: Exception) -> dict:
+    if isinstance(error, HTTPException):
+        detail = error.detail
+        payload = detail if isinstance(detail, dict) else {'message': str(detail)}
+        return {
+            'code': payload.get('code') or ('AI_EXECUTION_ERROR' if error.status_code >= 500 else 'REQUEST_ERROR'),
+            'message': payload.get('message', 'Gateway request failed'),
+            **{key: value for key, value in payload.items() if key not in {'code', 'message'}},
+        }
+    return {'code': 'INTERNAL_ERROR', 'message': f'Unexpected gateway error: {type(error).__name__}'}
+
+
+@app.post('/api/chat/stream')
+async def chat_stream(body: ChatRequest, request: Request):
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def publish(event: dict) -> None:
+        await queue.put({'type': event.get('type', 'workflow'), **event})
+
+    async def run() -> None:
+        token = _stream_event_callback.set(publish)
+        try:
+            result = await _chat_request(body)
+            await queue.put({'type': 'final', 'data': result})
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            await queue.put({'type': 'error', 'error': await _stream_error(error)})
+        finally:
+            _stream_event_callback.reset(token)
+
+    async def events():
+        worker = asyncio.create_task(run())
+        try:
+            while True:
+                if await request.is_disconnected():
+                    worker.cancel()
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield ': keepalive\n\n'
+                    continue
+                yield _sse_frame(event)
+                if event.get('type') in {'final', 'error'}:
+                    break
+        finally:
+            if not worker.done():
+                worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+
+    return StreamingResponse(
+        events(), media_type='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
     )
-    return {'ok':True,**result,'conversation_id':chat_id,'request_id':request_id}
+
+
+def _progress_start(request_id: str) -> None:
+    with _progress_lock:
+        _progress_events[request_id] = {
+            'request_id': request_id, 'status': 'running', 'stages': [],
+        }
+        while len(_progress_events) > 128:
+            _progress_events.pop(next(iter(_progress_events)))
+
+
+def _progress_update(request_id: str | None, stage: str, detail: str = '', status: str = 'completed') -> None:
+    if not request_id:
+        return
+    with _progress_lock:
+        current = _progress_events.get(request_id)
+        if current is None:
+            return
+        current['stages'].append({'stage': stage, 'detail': redact(detail)[:240], 'status': status})
+        current['current'] = current['stages'][-1]
+
+
+def _progress_finish(request_id: str | None, status: str = 'completed') -> None:
+    if not request_id:
+        return
+    with _progress_lock:
+        current = _progress_events.get(request_id)
+        if current:
+            current['status'] = status
+
+
+@app.post('/api/chat')
+async def chat(body: ChatRequest):
+    return await _chat_request(body)
 @app.post('/api/index')
 def index(body: IndexRequest):
     root = Path(body.path).resolve()
@@ -1089,7 +1232,14 @@ async def _routing_candidates(
         return available_models, candidates
 
     refresh_provider = 'local' if mode == 'local' else provider
-    await ProviderDiscovery(model_registry).refresh(refresh_provider)
+    try:
+        await asyncio.wait_for(
+            ProviderDiscovery(model_registry).refresh(refresh_provider),
+            timeout=settings.discovery_timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        # A slow health/model-list probe must not block response generation indefinitely.
+        pass
     available_models = _filter_routing_models(
         model_registry.list(), mode, provider, model
     )
@@ -1115,7 +1265,9 @@ def _cloud_candidates(
             context_tokens=context_tokens,
             require_native_tools=require_native_tools,
         )
-        return candidates if settings.cloud_fallback else candidates[:1]
+        if not settings.cloud_fallback:
+            return candidates[:1]
+        return candidates[:max(1, settings.routing_max_attempts)]
 
     primary = hybrid_router.decide(
         prompt,
@@ -1225,6 +1377,9 @@ async def _cloud_completion(prompt: str, system: str, requested_format: str = ''
     fallback_trace: list[dict] = []
     for candidate in candidates:
         started = perf_counter()
+        await _emit_stream_event({
+            'type': 'attempt_start', **_attempt_record(candidate, 'running'),
+        })
         try:
             response, usage = await _provider_completion(candidate, prompt, system)
             checked = validate(response, requested_format)
@@ -1250,7 +1405,9 @@ async def _cloud_completion(prompt: str, system: str, requested_format: str = ''
                     (candidate.provider, model, 'planning', input_tokens,
                      output_tokens, estimated_cost, 0),
                 )
-            fallback_trace.append(_attempt_record(candidate, 'success'))
+            success_record = _attempt_record(candidate, 'success')
+            fallback_trace.append(success_record)
+            await _emit_stream_event({'type': 'attempt_result', **success_record})
             return {
                 'response': response, 'usage': usage, 'decision': candidate,
                 'provider': candidate.provider, 'model': model,
@@ -1262,7 +1419,9 @@ async def _cloud_completion(prompt: str, system: str, requested_format: str = ''
                 candidate.route.value, candidate.provider, candidate.model_id or '',
                 ','.join(candidate.task_type), False, 0.0, latency, candidate.tools,
             )
-            fallback_trace.append(_attempt_record(candidate, 'failed', error))
+            failure_record = _attempt_record(candidate, 'failed', error)
+            fallback_trace.append(failure_record)
+            await _emit_stream_event({'type': 'attempt_result', **failure_record})
 
     raise HTTPException(503, {
         'code': 'AI_EXECUTION_ERROR',
@@ -1414,6 +1573,12 @@ def _model_metadata(models: list[dict], provider: str | None, model_id: str | No
 async def task(body: TaskRequest):
     started = perf_counter()
     prompt = redact(body.prompt)
+    progress_id = body.progress_id
+
+    def progress(stage: str, status: str = 'completed', detail: str = '') -> None:
+        _progress_update(progress_id, stage, detail, status)
+
+    progress('UNDERSTAND', detail='Request accepted and being classified')
     mode = body.mode.strip().lower()
     if mode not in {'auto', 'local', 'provider', 'model'}:
         raise HTTPException(400, {
@@ -1432,6 +1597,7 @@ async def task(body: TaskRequest):
             'message': 'model mode requires both provider and model',
         })
     try:
+        progress('ATTACHMENTS', 'running', 'Processing attachments')
         processed_attachments = [
             process_attachment(item.name, item.media_type, item.data_base64)
             for item in body.attachments
@@ -1439,6 +1605,7 @@ async def task(body: TaskRequest):
     except ValueError as error:
         raise HTTPException(400, {'code': 'INVALID_ATTACHMENT', 'message': str(error)})
     attachment_metadata = [item.metadata() for item in processed_attachments]
+    progress('ATTACHMENTS', detail=f'Prepared {len(processed_attachments)} attachment(s)')
     images = [
         {'media_type': item.media_type, 'data_base64': item.image_base64}
         for item in processed_attachments if item.kind == 'image'
@@ -1461,6 +1628,7 @@ async def task(body: TaskRequest):
             ),
         })
     if body.project:
+        progress('INSPECT', 'running', 'Inspecting selected project')
         root = Path(body.project).resolve()
         if not root.is_dir():
             raise HTTPException(400, 'Project directory not found')
@@ -1468,6 +1636,7 @@ async def task(body: TaskRequest):
         # The browser is only a client.  Keep planning on the gateway so every
         # client gets the same agent behavior, including API/CLI callers.
         if not body.actions and _requires_workspace_agent(prompt):
+            progress('PLAN', 'running', 'Planning workspace actions')
             project = workspace_manager.load(root)
             plan = await plan_agent_actions(PlanRequest(
                 prompt=body.prompt, project_id=project['id'],
@@ -1476,13 +1645,16 @@ async def task(body: TaskRequest):
                 tool=item['tool'], arguments=item.get('arguments', {}),
                 purpose=item.get('purpose', ''), approved=False,
             ) for item in plan.get('actions', [])]
+            progress('PLAN', detail=f'Prepared {len(body.actions)} workspace action(s)')
 
+        progress('RETRIEVE', 'running', 'Reading project context')
         context = project_context(root, prompt)
         store.replace_project_files(str(root), context['rows'])
         project_hash = context['context_hash']
         project_reference = format_project_context(context)
         project_files_used = [item['path'] for item in context['files']]
         project_discovery = context['discovery']
+        progress('RETRIEVE', detail=f'Loaded {len(project_files_used)} project file reference(s)')
         if body.actions:
             project = workspace_manager.load(root)
             executor = ProjectAgentExecutor(root, preferences=project.get('permissions'))
@@ -1490,6 +1662,7 @@ async def task(body: TaskRequest):
                 prompt,
                 [AgentAction(**action.model_dump()) for action in body.actions],
                 project_files_used,
+                progress_callback=progress,
             )
             if agent_trace.pending_approvals:
                 raise HTTPException(403, {
@@ -1509,6 +1682,7 @@ async def task(body: TaskRequest):
                     'agent_trace': agent_trace.to_dict(),
                 })
             # Workspace actions may have changed project state; rebuild authoritative context.
+            progress('RETRIEVE', 'running', 'Refreshing context after workspace changes')
             context = project_context(root, prompt)
             store.replace_project_files(str(root), context['rows'])
             project_hash = context['context_hash']
@@ -1521,6 +1695,7 @@ async def task(body: TaskRequest):
                 'move_file', 'copy_file',
             }
             if any(action.tool in mutation_tools for action in body.actions):
+                progress('FINAL_RESPONSE', 'running', 'Assembling the workspace result')
                 agent_trace.stage('FINAL_RESPONSE', detail={
                     'source': 'authoritative_tool_results',
                 })
@@ -1556,9 +1731,11 @@ async def task(body: TaskRequest):
                 }
 
     context_hash = Store.key(project_hash, attachment_hash) if attachment_hash else project_hash
+    progress('REASON', detail='Preparing the response context')
     # Action-bearing and explicitly routed requests are never replayed through Auto cache entries.
     cached = None if body.actions or mode != 'auto' else store.get_cache(prompt, context_hash)
     if cached:
+        progress('FINAL_RESPONSE', detail='Using a verified local response')
         with store.connection() as conn:
             conn.execute(
                 "INSERT INTO usage_events(provider,model,task_type,cache_hit,created_at) VALUES(?,?,?,?,datetime('now'))",
@@ -1584,6 +1761,7 @@ async def task(body: TaskRequest):
 
     routing_prompt = f'{prompt}\n[image attachment]' if images else prompt
     task_type = router.classify(routing_prompt)
+    progress('REASON', detail='Classifying the request and preparing skills')
     skill_context, skills_used = basic_skills.context_for(prompt)
     dynamic_skill_context, dynamic_skills = skill_registry.context_for(
         prompt, capabilities=set(task_type.value.split(',')), max_chars=8_000
@@ -1616,6 +1794,7 @@ async def task(body: TaskRequest):
     ) + (f"\n\nContext:\n{combined_context}" if combined_context else "")
 
     # Explicit selection narrows the same capability-aware router pool; it never bypasses routing checks.
+    progress('ROUTE', 'running', 'Selecting a provider and model')
     available_models, candidates = await _routing_candidates(
         routing_prompt, context_economy.compressed_tokens,
         mode, requested_provider, requested_model,
@@ -1637,7 +1816,11 @@ async def task(body: TaskRequest):
     provider_name = selected_model = None
     selected_metadata = None
     attempt_started = perf_counter()
-    for candidate in candidates:
+    for candidate in candidates[:max(1, settings.routing_max_attempts)]:
+        progress('GENERATE', 'running', f'Generating response with {candidate.provider}')
+        await _emit_stream_event({
+            'type': 'attempt_start', **_attempt_record(candidate, 'running'),
+        })
         candidate_started = perf_counter()
         try:
             candidate_response, candidate_usage = await _provider_completion(
@@ -1653,7 +1836,9 @@ async def task(body: TaskRequest):
                 available_models, provider_name, selected_model
             )
             attempt_started = candidate_started
-            fallback_trace.append(_attempt_record(candidate, 'success'))
+            success_record = _attempt_record(candidate, 'success')
+            fallback_trace.append(success_record)
+            await _emit_stream_event({'type': 'attempt_result', **success_record})
             break
         except Exception as error:
             latency = int((perf_counter() - candidate_started) * 1000)
@@ -1661,9 +1846,12 @@ async def task(body: TaskRequest):
                 candidate.route.value, candidate.provider, candidate.model_id or '',
                 ','.join(candidate.task_type), False, 0.0, latency, candidate.tools,
             )
-            fallback_trace.append(_attempt_record(candidate, 'failed', error))
+            failure_record = _attempt_record(candidate, 'failed', error)
+            fallback_trace.append(failure_record)
+            await _emit_stream_event({'type': 'attempt_result', **failure_record})
 
     if response is None or usage is None or decision is None:
+        progress('GENERATE', 'failed', 'No provider could complete the response')
         raise HTTPException(503, {
             'code': 'AI_EXECUTION_ERROR',
             'message': _fallback_failure_message(fallback_trace),
@@ -1741,6 +1929,7 @@ async def task(body: TaskRequest):
             agent_trace.stage('VERIFY_AGAIN', status='skipped')
         agent_trace.stage('FINAL_RESPONSE')
 
+    progress('FINAL_RESPONSE', detail='Response ready')
     return {
         'response': response, 'provider': provider_name, 'model': model,
         'task_type': task_type.value, 'skills_used': skills_used,
@@ -1779,18 +1968,38 @@ def _flow_status(*, workspace: str, discovery: str, context: str, route: str,
 
 def _action_receipt(root: Path, trace) -> str:
     """Build a factual user response solely from successful MCP observations."""
-    lines = []
+    lines = ['Workspace actions completed successfully.', '']
     for item in trace.observations:
         output = item.get('output')
         relative = None
         if isinstance(output, dict):
             relative = output.get('path') or output.get('destination')
-        if relative:
-            target = (root / str(relative)).resolve()
-            lines.append(f"- {item['tool']}: {target}")
-        else:
+        if not relative:
             lines.append(f"- {item['tool']}: completed")
-    return 'Workspace actions completed successfully.\n' + '\n'.join(lines)
+            continue
+
+        target = (root / str(relative)).resolve()
+        details = []
+        if isinstance(output, dict) and output.get('line_count') is not None:
+            details.append(f"{output['line_count']} lines")
+        if isinstance(output, dict) and output.get('bytes') is not None:
+            details.append(f"{output['bytes']} bytes")
+        suffix = f" ({', '.join(details)})" if details else ''
+        lines.append(f"**{item['tool']}** — `{target}`{suffix}")
+
+        preview = output.get('preview') if isinstance(output, dict) else None
+        if preview is not None:
+            # Choose a fence longer than any backtick run in the observed text.
+            # The preview remains unchanged while its markdown stays inert.
+            preview_text = str(preview)
+            longest_run = max(
+                (len(match.group(0)) for match in re.finditer(r'`+', preview_text)),
+                default=0,
+            )
+            fence = '`' * max(3, longest_run + 1)
+            lines.extend(['', f'{fence}zevora-file-preview', preview_text, fence])
+        lines.append('')
+    return '\n'.join(lines).rstrip()
 
 
 def _requires_workspace_agent(prompt: str) -> bool:

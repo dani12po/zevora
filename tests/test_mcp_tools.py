@@ -22,9 +22,47 @@ def test_selected_workspace_write_and_delete_do_not_require_approval(tmp_path):
     written = gateway.execute('write_file', {'path': 'note.txt', 'content': 'hello'})
     assert written.ok and not written.approval_required
     assert (tmp_path / 'note.txt').read_text() == 'hello'
+    assert written.output == {
+        'path': 'note.txt', 'bytes': 5, 'preview': 'hello', 'line_count': 1,
+    }
     deleted = gateway.execute('delete_file', {'path': 'note.txt'})
     assert deleted.ok and not deleted.approval_required
+    assert deleted.output == {'path': 'note.txt', 'bytes': 5}
     assert not (tmp_path / 'note.txt').exists()
+
+
+def test_file_mutation_receipts_include_grounded_preview_metadata(tmp_path):
+    gateway = LocalMCPGateway(tmp_path)
+    content = '# Title\nalpha *beta*\nemoji: é'
+
+    created = gateway.execute(
+        'create_file', {'path': 'preview.md', 'content': content}, approved=True
+    )
+    assert created.ok
+    assert created.output['preview'] == content
+    assert created.output['line_count'] == 3
+    assert created.output['bytes'] == len(content.encode('utf-8'))
+
+    replacement = 'new `value`\n```html\n<strong>safe</strong>\n```'
+    edited = gateway.execute('edit_file', {
+        'path': 'preview.md', 'old_text': 'alpha *beta*\nemoji: é', 'new_text': replacement,
+    }, approved=True)
+    assert edited.ok
+    assert edited.output['preview'] == replacement
+    assert edited.output['preview'] != (tmp_path / 'preview.md').read_text(encoding='utf-8')
+    assert edited.output['line_count'] == 5
+    assert edited.output['bytes'] == (tmp_path / 'preview.md').stat().st_size
+
+
+def test_file_preview_is_truncated_by_characters(tmp_path):
+    gateway = LocalMCPGateway(tmp_path)
+    content = 'x' * 401
+
+    written = gateway.execute('write_file', {'path': 'long.txt', 'content': content})
+
+    assert written.ok
+    assert written.output['preview'] == ('x' * 400) + '…'
+    assert len(written.output['preview']) == 401
 
 
 def test_terminal_is_allowlisted_and_rooted(tmp_path):
@@ -52,6 +90,9 @@ def test_complete_filesystem_surface_is_real_and_workspace_scoped(tmp_path):
         'create_file', {'path': 'src/note.txt', 'content': 'Hello ZEVORA'}, approved=True
     )
     assert created.ok and (tmp_path / 'src' / 'note.txt').is_file()
+    assert created.output['preview'] == 'Hello ZEVORA'
+    assert created.output['line_count'] == 1
+    assert created.output['bytes'] == 12
 
     listed = gateway.execute('list_directory', {'path': 'src'})
     assert listed.output[0]['path'] == 'src/note.txt'
@@ -62,6 +103,9 @@ def test_complete_filesystem_surface_is_real_and_workspace_scoped(tmp_path):
         'path': 'src/note.txt', 'old_text': 'ZEVORA', 'new_text': 'World'
     }, approved=True)
     assert edited.ok and (tmp_path / 'src' / 'note.txt').read_text() == 'Hello World'
+    assert edited.output['preview'] == 'World'
+    assert edited.output['line_count'] == 1
+    assert edited.output['bytes'] == 11
 
     copied = gateway.execute('copy_file', {
         'source': 'src/note.txt', 'destination': 'src/copy.txt'
@@ -70,6 +114,8 @@ def test_complete_filesystem_surface_is_real_and_workspace_scoped(tmp_path):
         'source': 'src/copy.txt', 'destination': 'archive/copy.txt'
     }, approved=True)
     assert copied.ok and moved.ok and (tmp_path / 'archive' / 'copy.txt').is_file()
+    assert copied.output['bytes'] == 12
+    assert moved.output['bytes'] == 12
 
     escaped = gateway.execute('write_file', {
         'path': '../outside.txt', 'content': 'blocked'
@@ -182,6 +228,23 @@ def test_disabled_mutation_runs_in_selected_workspace_after_reenable(tmp_path):
     written = gateway.execute('write_file', {'path': 'note.txt', 'content': 'written'})
     assert written.ok and not written.approval_required
     assert (tmp_path / 'note.txt').read_text() == 'written'
+
+
+def test_action_receipt_keeps_markdown_special_characters_in_grounded_preview(tmp_path):
+    trace = type('Trace', (), {'observations': [{
+        'tool': 'write_file',
+        'output': {
+            'path': 'snippet.md', 'bytes': 42, 'line_count': 3,
+            'preview': '*bold* and `inline`\n```js\n# heading\n```',
+        },
+    }]})()
+
+    receipt = main._action_receipt(tmp_path, trace)
+
+    assert '```text' not in receipt
+    assert '````text' in receipt
+    assert '*bold* and `inline`' in receipt
+    assert '```js' in receipt
 
 
 def test_tool_update_api_persists_and_rejects_unknown_tool(tmp_path, monkeypatch):

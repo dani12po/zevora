@@ -1,5 +1,5 @@
-import {$, api, emptyState, escapeHtml, fmtBytes, navigate, setMessages, state, stateIndicator, userErrorMessage} from './core.js?v=20260818-10';
-import {appendMessage, configureMessageActions, newChat, refreshSidebarChats, replaceAssistantMessage} from './chats.js?v=20260818-10';
+import {$, api, emptyState, escapeHtml, fmtBytes, navigate, setMessages, state, stateIndicator, userErrorMessage} from './core.js?v=20260818-11';
+import {appendMessage, configureMessageActions, newChat, refreshSidebarChats, replaceAssistantMessage} from './chats.js?v=20260818-12';
 
 const LIMITS = {image:8_000_000,pdf:12_000_000,text:2_000_000};
 let projectSelectionGeneration = 0;
@@ -68,6 +68,76 @@ function fallbackStatus(data){if(data.reason==='EXACT_CACHE_HIT')return'Complete
 function resizePrompt(){const prompt=$('prompt');prompt.style.height='auto';prompt.style.height=`${Math.min(prompt.scrollHeight,220)}px`;}
 function failureTitle(error){if(error.code==='AI_EXECUTION_ERROR')return'**AI response unavailable**';if(error.code==='PROJECT_REQUIRED')return'**Project folder required**';if(error.code==='ACTION_FAILED')return'**Action failed**';return'**The request could not be completed**';}
 
+function newProgressId(){return `zv-${crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;}
+
+function streamError(payload = {}) {
+  const error = new Error(payload.message || 'Gateway stream failed');
+  Object.assign(error, payload, {streamTerminal:true});
+  return error;
+}
+
+async function streamChat(payload, onEvent) {
+  const controller = new AbortController();
+  let idleTimer = setTimeout(() => controller.abort(), 25000);
+  const resetIdleTimer = () => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => controller.abort(), 25000);
+  };
+  try {
+    const base = window.ZEVORA_GATEWAY_URL || window.location.origin;
+    const response = await fetch(base + '/api/chat/stream', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(payload), signal:controller.signal,
+    });
+    if (!response.ok || !response.body || !response.headers.get('content-type')?.includes('text/event-stream')) {
+      throw new Error(`Realtime workflow unavailable (HTTP ${response.status})`);
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let final = null;
+    while (true) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      resetIdleTimer();
+      buffer += decoder.decode(value, {stream:true}).replace(/\r\n/g, '\n');
+      let boundary;
+      while ((boundary = buffer.indexOf('\n\n')) >= 0) {
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const data = frame.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
+        if (!data) continue;
+        const event = JSON.parse(data);
+        onEvent?.(event);
+        if (event.type === 'error') throw streamError(event.error);
+        if (event.type === 'final') final = event.data;
+      }
+    }
+    if (!final) throw new Error('Realtime workflow ended before the final response');
+    return final;
+  } finally {
+    clearTimeout(idleTimer);
+  }
+}
+
+function watchProgress(requestId, message){
+  let stopped = false;
+  let timer = null;
+  const poll = async () => {
+    if (stopped) return;
+    try {
+      const progress = await api(`/api/chat/progress/${encodeURIComponent(requestId)}`);
+      message.setWorkflowProgress?.(progress);
+      if (progress.status !== 'running') return;
+    } catch (_) {
+      // The initial poll can race request registration; retry while the chat call runs.
+    }
+    if (!stopped) timer = setTimeout(poll, 350);
+  };
+  poll();
+  return () => { stopped = true; if (timer) clearTimeout(timer); };
+}
+
 export async function regenerateResponse(content, meta, message, originalText) {
   if (!content || !meta?.chat_id || !meta?.message_id || !message || state.isSending) return;
   if (!state.gatewayReady && !await checkGateway()) { $('route-status').textContent = 'Gateway offline'; return; }
@@ -100,22 +170,32 @@ export async function send(replay=null){
   if(!content||state.isSending)return;
   if(!state.gatewayReady&&!await checkGateway()){$('route-status').textContent='Gateway offline';return;}
   const request=replay||{content,attachments:state.pendingAttachments.map(({name,media_type,data_base64})=>({name,media_type,data_base64})),actions:state.pendingActions.map(action=>({...action}))};
-  state.isSending=true;syncComposerState();let userMessage=null,waiting=null;
+  state.isSending=true;syncComposerState();let userMessage=null,waiting=null,stopProgress=()=>{};
   try{
     if(!state.activeChat)await newChat();
     const projectId=$('project-select').value||null;
+    const requestId=newProgressId();
     if(!request.retrying)userMessage=appendMessage('user',content,{attachments:request.attachments});
     $('prompt').value='';resizePrompt();
-    const activity=request.actions.length?'Running workspace actions':'Choosing the best available model';
+    const activity=request.actions.length?'Running workspace actions':'Generating response';
     $('route-status').textContent=request.actions.length?'Step 2 of 3 - Running actions':'Generating response';
     if(waiting)waiting.setTypingStatus(activity);else waiting=appendMessage('assistant',activity,{typing:true});
-    const data=await api('/api/chat',{method:'POST',body:JSON.stringify({message:content,conversation_id:state.activeChat,project_id:projectId,mode:$('routing-override')?.value||'auto',provider:$('routing-provider')?.value||null,model:$('routing-model')?.value||null,attachments:request.attachments,actions:request.actions})});
-    state.activeChat=data.conversation_id;waiting.remove();appendMessage('assistant',data.response,{...data,regenerate_content:content});
+    const payload={message:content,request_id:requestId,conversation_id:state.activeChat,project_id:projectId,mode:$('routing-override')?.value||'auto',provider:$('routing-provider')?.value||null,model:$('routing-model')?.value||null,attachments:request.attachments,actions:request.actions};
+    let data;
+    try {
+      data=await streamChat(payload,event=>waiting.setWorkflowEvent?.(event));
+    } catch (streamFailure) {
+      if (streamFailure.streamTerminal) throw streamFailure;
+      $('route-status').textContent='Realtime connection interrupted - recovering response';
+      stopProgress=watchProgress(requestId,waiting);
+      data=await api('/api/chat',{method:'POST',body:JSON.stringify(payload)});
+    }
+    stopProgress();state.activeChat=data.conversation_id;replaceAssistantMessage(waiting,data.response,{...data,regenerate_content:content});waiting.classList.remove('is-typing');
     state.pendingAttachments=[];state.pendingActions=[];state.pendingApprovalRequest=null;renderComposerItems();
     $('route-status').textContent=data.reason==='TOOLS_EXECUTED'?'Completed - changes were written to the selected folder':fallbackStatus(data);
     await refreshSidebarChats();
   }catch(error){
-    waiting?.remove();
+    stopProgress();waiting?.remove();
     const readable={PROJECT_REQUIRED:'Open a project folder first. The agent cannot access drive files from chat-only mode.',ACTION_FAILED:'The requested action failed. No success was reported.',AI_EXECUTION_ERROR:error.message||'No configured AI model was able to respond.'};
     const explanation=readable[error.code]||userErrorMessage(error);
     $('route-status').textContent=error.code==='APPROVAL_REQUIRED'?'Waiting for your approval':`Stopped - ${explanation}`;
@@ -127,7 +207,7 @@ export async function send(replay=null){
       if(error.code==='PROJECT_REQUIRED')$('project-dialog').showModal();
       if(!error.code){state.gatewayReady=false;await checkGateway();}
     }
-  }finally{state.isSending=false;syncComposerState();renderComposerItems();$('prompt').focus();}
+  }finally{stopProgress();state.isSending=false;syncComposerState();renderComposerItems();$('prompt').focus();}
 }
 export async function approvePendingActions(event){event.preventDefault();if(!state.pendingApprovalRequest)return;const indexes=new Set(state.pendingApprovalRequest.approvalIndexes||[]);state.pendingApprovalRequest.actions=state.pendingApprovalRequest.actions.map((action,index)=>({...action,approved:action.approved||indexes.has(index)}));const{approvalIndexes,...replay}=state.pendingApprovalRequest;$('approval-dialog').close();state.pendingApprovalRequest=null;await send(replay);}
 

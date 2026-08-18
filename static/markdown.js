@@ -1,4 +1,4 @@
-import {escapeHtml} from './core.js?v=20260818-10';
+import {escapeHtml} from './core.js?v=20260818-11';
 
 function inlineMarkdown(value) {
   const parts = String(value ?? '').split(/(`[^`\n]+`)/g);
@@ -16,6 +16,11 @@ function inlineMarkdown(value) {
 
 function codeBlock(language, code) {
   const label = language || 'text';
+  if (label === 'zevora-file-preview') {
+    const isLong = code.length > 280 || code.split('\n').length > 12;
+    const body = `<pre><code>${escapeHtml(code)}</code></pre>`;
+    return `<details class="file-preview"${isLong ? '' : ' open'}><summary><span class="file-preview-title"><span aria-hidden="true">▣</span> File preview</span><span class="file-preview-meta">${code.length} chars</span></summary><div class="file-preview-body">${body}<button type="button" class="copy-code file-preview-copy" data-copy-code>Copy content</button></div></details>`;
+  }
   return `<div class="code-block"><div class="code-header"><span>${escapeHtml(label)}</span><button type="button" class="copy-code" data-copy-code>Copy</button></div><pre><code class="language-${escapeHtml(label)}">${escapeHtml(code)}</code></pre></div>`;
 }
 
@@ -42,16 +47,17 @@ export function renderMarkdown(markdown) {
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
-    const fence = line.match(/^```([\w.+-]*)\s*$/);
+    const fence = line.match(/^(`{3,})([\w.+-]*)\s*$/);
     if (fence) {
       flushText();
+      const marker = fence[1];
       const code = [];
       index += 1;
-      while (index < lines.length && !/^```\s*$/.test(lines[index])) {
+      while (index < lines.length && lines[index].trim() !== marker) {
         code.push(lines[index]);
         index += 1;
       }
-      output.push(codeBlock(fence[1], code.join('\n')));
+      output.push(codeBlock(fence[2], code.join('\n')));
       continue;
     }
     const heading = line.match(/^(#{1,4})\s+(.+)$/);
@@ -89,7 +95,7 @@ export function wireMarkdownActions(root = document) {
   root.addEventListener('click', async event => {
     const button = event.target.closest('[data-copy-code]');
     if (!button) return;
-    const code = button.closest('.code-block')?.querySelector('code')?.textContent || '';
+    const code = button.closest('.file-preview, .code-block')?.querySelector('code')?.textContent || '';
     try {
       await navigator.clipboard.writeText(code);
       button.textContent = 'Copied';

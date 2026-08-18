@@ -3,7 +3,7 @@
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from time import monotonic
-from typing import Any
+from typing import Any, Callable
 
 from agent.config import settings
 from agent.tools.mcp_gateway import LocalMCPGateway
@@ -50,9 +50,19 @@ class ProjectAgentExecutor:
         self.gateway = LocalMCPGateway(self.root, preferences=preferences)
 
     def execute(self, prompt: str, actions: list[AgentAction] | None = None,
-                project_files: list[str] | None = None) -> AgentTrace:
+                project_files: list[str] | None = None,
+                progress_callback: Callable[[str, str, str], None] | None = None) -> AgentTrace:
         trace = AgentTrace()
         started = monotonic()
+
+        def emit(stage: str, status: str = 'completed', detail: str = '') -> None:
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(stage, status, detail)
+            except Exception:
+                # Progress is observational and must never affect tool execution.
+                return
         max_iterations = max(1, min(self.MAX_ITERATIONS, settings.max_agent_iterations))
         max_tool_calls = max(1, min(self.MAX_TOOL_CALLS, settings.max_agent_tool_calls))
         timeout_seconds = max(1, min(self.TIMEOUT_SECONDS, settings.agent_timeout_seconds))
@@ -62,6 +72,7 @@ class ProjectAgentExecutor:
             'prompt_chars': len(prompt), 'max_iterations': max_iterations,
             'max_tool_calls': max_tool_calls, 'timeout_seconds': timeout_seconds,
         })
+        emit('UNDERSTAND', detail='Understanding the request')
         trace.stage('PLAN', detail={
             'actions': [
                 {'tool': action.tool, 'purpose': action.purpose,
@@ -71,19 +82,25 @@ class ProjectAgentExecutor:
             'truncated_actions': max(0, len(requested_actions) - len(safe_actions)),
         })
         trace.stage('INSPECT', detail={'project_files': list(project_files or [])})
+        emit('INSPECT', detail='Inspecting project context')
         trace.stage('RETRIEVE', detail={'project_context_available': bool(project_files)})
+        emit('RETRIEVE', detail='Retrieving project context')
         trace.stage('REASON', detail={
             'policy': 'Structured actions only; model prose is never executed.'
         })
 
         if not safe_actions:
             trace.stage('ACT', status='skipped', detail='No structured actions requested')
+            emit('ACT', 'skipped', 'No workspace actions requested')
             trace.stage('OBSERVE', status='skipped')
+            emit('OBSERVE', 'skipped', 'No tool results to observe')
             trace.stage('VERIFY', status='skipped')
+            emit('VERIFY', 'skipped', 'No verification action requested')
             trace.verified = None
             return trace
 
         for index, action in enumerate(safe_actions):
+            emit('ACT', 'running', f'Running {action.tool}')
             if monotonic() - started >= timeout_seconds:
                 trace.observations.append({
                     'index': index, 'tool': action.tool, 'ok': False,
@@ -112,6 +129,11 @@ class ProjectAgentExecutor:
                     'arguments': action.arguments, 'purpose': action.purpose,
                 })
             trace.observations.append(observation)
+            emit(
+                'ACT',
+                'completed' if observation['ok'] else 'failed',
+                f'{action.tool} ' + ('completed' if observation['ok'] else 'failed'),
+            )
 
         act_status = 'failed' if len(requested_actions) > max_tool_calls else 'completed'
         trace.stage('ACT', status=act_status, detail={
@@ -119,16 +141,24 @@ class ProjectAgentExecutor:
             'limit_reached': len(requested_actions) > max_tool_calls,
         })
         trace.stage('OBSERVE', detail={'observations': len(trace.observations)})
+        emit('OBSERVE', detail=f'Recorded {len(trace.observations)} tool result(s)')
         verification = [
             item for item in trace.observations if item['tool'] in self.VERIFY_TOOLS
         ]
         if verification:
+            emit('VERIFY', 'running', 'Verifying workspace changes')
             trace.verified = all(item['ok'] for item in verification)
             trace.stage(
                 'VERIFY', 'completed' if trace.verified else 'failed',
                 {'checks': len(verification)},
             )
+            emit(
+                'VERIFY',
+                'completed' if trace.verified else 'failed',
+                'Workspace verification completed' if trace.verified else 'Workspace verification failed',
+            )
         else:
             trace.verified = None
             trace.stage('VERIFY', status='skipped', detail='No verification action requested')
+            emit('VERIFY', 'skipped', 'No verification action requested')
         return trace

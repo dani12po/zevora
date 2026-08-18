@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import re
 from pathlib import Path
@@ -54,6 +55,45 @@ def test_core_import_does_not_depend_on_cwd(monkeypatch, tmp_path):
     finally:
         os.chdir(original)
 
+def test_chat_stream_emits_final_and_persists_once(monkeypatch, tmp_path):
+    manager = WorkspaceManager(tmp_path / 'workspace.db')
+    monkeypatch.setattr(main, 'workspace_manager', manager)
+    chat = manager.create_chat('New chat')
+
+    async def fake_task(request):
+        callback = main._stream_event_callback.get()
+        await callback({
+            'type': 'attempt_start', 'source': 'cloud_provider',
+            'route': 'CLOUD', 'provider': 'openai', 'model': 'gpt-test',
+            'status': 'running',
+        })
+        await callback({
+            'type': 'attempt_result', 'source': 'cloud_provider',
+            'route': 'CLOUD', 'provider': 'openai', 'model': 'gpt-test',
+            'status': 'success',
+        })
+        return {
+            'response': 'streamed result', 'route': 'CLOUD', 'reason': 'BEST_CLOUD_MATCH',
+            'provider': 'openai', 'model': 'gpt-test', 'tools': [], 'quality_score': .9,
+        }
+
+    monkeypatch.setattr(main, 'task', fake_task)
+    response = TestClient(main.app).post('/api/chat/stream', json={
+        'message': 'hello', 'conversation_id': chat['id'], 'request_id': 'zv-sse-test',
+    })
+
+    assert response.status_code == 200
+    assert 'text/event-stream' in response.headers['content-type']
+    frames = [line[6:] for line in response.text.splitlines() if line.startswith('data: ')]
+    events = [json.loads(frame) for frame in frames]
+    assert [event['type'] for event in events] == ['attempt_start', 'attempt_result', 'final']
+    assert events[-1]['data']['response'] == 'streamed result'
+    stored = manager.get_chat(chat['id'])['messages']
+    assert [(item['role'], item['content']) for item in stored] == [
+        ('user', 'hello'), ('assistant', 'streamed result'),
+    ]
+
+
 def test_chat_contract_uses_existing_task_engine(monkeypatch, tmp_path):
     manager = WorkspaceManager(tmp_path / 'workspace.db')
     monkeypatch.setattr(main, 'workspace_manager', manager)
@@ -69,6 +109,21 @@ def test_chat_contract_uses_existing_task_engine(monkeypatch, tmp_path):
     assert result['response'] == 'real-core-result'
     assert result['conversation_id'] == chat['id']
     assert result['request_id'].startswith('zv-')
+
+def test_chat_progress_lifecycle_redacts_and_bounds_details():
+    request_id = 'zv-progress-test'
+    main._progress_start(request_id)
+    main._progress_update(request_id, 'ACT', 'token=sk-this-must-not-leak ' + ('x' * 400), 'running')
+    progress = main.chat_progress(request_id)
+
+    assert progress['status'] == 'running'
+    assert progress['current']['status'] == 'running'
+    assert '[REDACTED]' in progress['current']['detail']
+    assert len(progress['current']['detail']) <= 240
+
+    main._progress_finish(request_id)
+    assert main.chat_progress(request_id)['status'] == 'completed'
+
 
 def test_chat_connects_existing_conversation_to_selected_project(monkeypatch, tmp_path):
     manager = WorkspaceManager(tmp_path / 'workspace.db')
@@ -505,6 +560,19 @@ def test_usage_cost_uses_input_and_output_prices():
     assert main._usage_tokens({'prompt_tokens': 12, 'completion_tokens': 7}) == (12, 7)
 
 
+def test_markdown_renderer_supports_safe_variable_length_code_fences():
+    source = (main.PROJECT_ROOT / 'static' / 'markdown.js').read_text(encoding='utf-8')
+
+    assert "line.match(/^(`{3,})([\\w.+-]*)\\s*$/)" in source
+    assert "const marker = fence[1]" in source
+    assert "lines[index].trim() !== marker" in source
+    assert "escapeHtml(code)" in source
+    assert "label === 'zevora-file-preview'" in source
+    assert 'class="file-preview"' in source
+    assert 'Copy content' in source
+    assert "button.closest('.file-preview, .code-block')" in source
+
+
 def test_static_chat_guidance_and_docs_contract():
     root = Path(__file__).resolve().parents[1]
     static = root / 'static'
@@ -525,6 +593,18 @@ def test_static_chat_guidance_and_docs_contract():
     assert '.workspace-access' in css
     assert '.docs-layout' in css
     assert '.message-error' in css
+    assert '.file-preview' in css
+    assert 'styles.css?v=20260818-12' in html
+    assert 'app.js?v=20260818-12' in html
+    assert 'setWorkflowProgress' in javascript
+    assert 'setWorkflowEvent' in javascript
+    assert 'request_id' in javascript
+    assert '/api/chat/stream' in javascript
+    assert 'response.body.getReader()' in javascript
+    assert 'attempt_start' in javascript
+    assert 'attempt_result' in javascript
+    assert '/api/chat/progress/' in javascript
+    assert '.workflow-live' in css
 
 
 def test_frontend_error_codes_have_actionable_owning_page_presentations():
@@ -575,14 +655,14 @@ def test_static_frontend_module_and_theme_contract():
     app_javascript = (static / 'app.js').read_text(encoding='utf-8')
     css = (static / 'styles.css').read_text(encoding='utf-8')
     providers = (static / 'providers.js').read_text(encoding='utf-8')
-    assert re.search(r'<script\s+type="module"\s+src="/static/app\.js\?v=20260818-10"', html)
+    assert re.search(r'<script\s+type="module"\s+src="/static/app\.js\?v=20260818-11"', html)
     assert "fetch('/health', {cache: 'no-store'})" in html
     assert 'Gateway connected' in html
     assert 'family=Inter' in html and 'family=JetBrains+Mono' in html
     assert 'onclick=' not in html
-    assert "from './core.js?v=20260818-10'" in app_javascript
-    assert "from './chat.js?v=20260818-10'" in app_javascript
-    assert "from './chats.js?v=20260818-10'" in app_javascript
+    assert "from './core.js?v=20260818-11'" in app_javascript
+    assert "from './chat.js?v=20260818-11'" in app_javascript
+    assert "from './chats.js?v=20260818-11'" in app_javascript
 
     routes = {
         '/': 'renderChat', '/chats': 'renderChatVault', '/docs': 'renderDocs',

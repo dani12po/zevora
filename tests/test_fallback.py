@@ -77,6 +77,28 @@ def test_cloud_completion_refreshes_empty_registry_and_uses_discovered_provider(
     assert refreshed == [None]
 
 
+def test_routing_candidates_bounds_slow_discovery(monkeypatch):
+    class Registry:
+        def list(self):
+            return []
+
+    class Discovery:
+        def __init__(self, _registry):
+            pass
+
+        async def refresh(self, _provider_name=None):
+            await asyncio.sleep(1)
+
+    monkeypatch.setattr(main, 'model_registry', Registry())
+    monkeypatch.setattr(main, 'ProviderDiscovery', Discovery)
+    monkeypatch.setattr(main.settings, 'discovery_timeout_seconds', .01)
+
+    models, candidates = asyncio.run(main._routing_candidates('explain this'))
+
+    assert models == []
+    assert candidates == []
+
+
 def test_cloud_completion_does_not_refresh_when_registry_has_healthy_candidate(
     tmp_path, monkeypatch
 ):
@@ -139,6 +161,50 @@ def test_cloud_completion_tries_another_model_from_same_provider(tmp_path, monke
     assert result['model'] == 'model-b'
     assert [item['status'] for item in result['fallback_trace']] == ['failed', 'success']
     assert result['fallback_trace'][0]['error'] == 'RuntimeError'
+
+
+def test_cloud_completion_emits_ordered_attempt_events_for_fallback(tmp_path, monkeypatch):
+    models = [_model('first', 'model-a'), _model('second', 'model-b'), _model('third', 'model-c')]
+
+    class Registry:
+        def list(self):
+            return models
+
+    class Provider:
+        async def complete_for_model(self, _prompt, _system, model_id):
+            if model_id != 'model-c':
+                raise RuntimeError(f'{model_id} unavailable')
+            return 'recovered response', {'input_tokens': 2, 'output_tokens': 3}
+
+    events = []
+
+    async def capture(event):
+        events.append(event)
+
+    monkeypatch.setattr(main, 'store', Store(tmp_path / 'agent.db'))
+    monkeypatch.setattr(main, 'model_registry', Registry())
+    monkeypatch.setattr(main, 'get_provider', lambda _name: Provider())
+    monkeypatch.setattr(main.settings, 'cloud_fallback', True)
+    monkeypatch.setattr(
+        'agent.routing.hybrid_router.provider_policy',
+        lambda _name: {'enabled': True, 'routing_priority': 50, 'default_model': ''},
+    )
+
+    token = main._stream_event_callback.set(capture)
+    try:
+        result = asyncio.run(main._cloud_completion('explain this', 'be concise'))
+    finally:
+        main._stream_event_callback.reset(token)
+
+    assert result['response'] == 'recovered response'
+    assert [(event['type'], event['model'], event['status']) for event in events] == [
+        ('attempt_start', 'model-a', 'running'),
+        ('attempt_result', 'model-a', 'failed'),
+        ('attempt_start', 'model-b', 'running'),
+        ('attempt_result', 'model-b', 'failed'),
+        ('attempt_start', 'model-c', 'running'),
+        ('attempt_result', 'model-c', 'success'),
+    ]
 
 
 def test_cloud_completion_reports_local_and_all_failed_alternatives(tmp_path, monkeypatch):

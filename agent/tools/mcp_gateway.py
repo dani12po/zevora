@@ -358,7 +358,10 @@ class LocalMCPGateway:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding='utf-8')
             return ToolResult(True, tool, {
-                'path': path.relative_to(self.root).as_posix(), 'bytes': len(encoded),
+                'path': path.relative_to(self.root).as_posix(),
+                'bytes': len(encoded),
+                'preview': content[:400] + ('…' if len(content) > 400 else ''),
+                'line_count': content.count('\n') + 1,
             })
 
         if canonical == 'edit_file':
@@ -379,20 +382,32 @@ class LocalMCPGateway:
                 return ToolResult(False, tool, 'File exceeds 1 MB limit')
             path.write_text(updated, encoding='utf-8')
             return ToolResult(True, tool, {
-                'path': path.relative_to(self.root).as_posix(), 'replacements': 1,
+                'path': path.relative_to(self.root).as_posix(),
+                'bytes': len(updated.encode('utf-8')),
+                'preview': new_text[:400] + ('…' if len(new_text) > 400 else ''),
+                'line_count': updated.count('\n') + 1,
+                'replacements': 1,
             })
 
         if canonical == 'delete_file':
             path = self._path(args.get('path'))
             if not path.is_file():
                 return ToolResult(False, tool, 'File not found')
+            size_bytes = path.stat().st_size
             path.unlink()
-            return ToolResult(True, tool, {'path': path.relative_to(self.root).as_posix()})
+            return ToolResult(True, tool, {
+                'path': path.relative_to(self.root).as_posix(),
+                'bytes': size_bytes,
+            })
 
         if canonical in {'move_file', 'copy_file'}:
+            source_path = self._path(args.get('source'))
+            size_bytes = source_path.stat().st_size if source_path.is_file() else None
             ok, output = self._copy(
                 args.get('source'), args.get('destination'), canonical == 'move_file'
             )
+            if ok and isinstance(output, dict) and size_bytes is not None:
+                output['bytes'] = size_bytes
             return ToolResult(ok, tool, output)
 
         if canonical == 'git':

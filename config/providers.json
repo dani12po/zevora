@@ -18,7 +18,7 @@
     "openai": {
       "enabled": false,
       "routing_priority": 90,
-      "supports_vision": true,
+      "supports_vision": false,
       "default_model": "orcarouter/free"
     },
     "anthropic": {
@@ -47,7 +47,7 @@
     },
     "nvidia": {
       "enabled": true,
-      "routing_priority": 90,
+      "routing_priority": 80,
       "default_model": "z-ai/glm-5.2",
       "supports_vision": false
     }

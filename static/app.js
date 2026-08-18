@@ -1,7 +1,7 @@
-import {$, api, navigate, registerRoutes, render, setSidebarOpen} from './core.js?v=20260818-10';
-import {checkGateway, createProject, loadProject, pickProject, refreshProjects, renderChat, renderComposerItems, syncWorkspaceAccess, wireChatEvents} from './chat.js?v=20260818-10';
-import {confirmRenameChat, newChat, refreshSidebarChats, renderChatVault} from './chats.js?v=20260818-10';
-import {wireMarkdownActions} from './markdown.js?v=20260818-10';
+import {$, api, navigate, registerRoutes, render, setSidebarOpen} from './core.js?v=20260818-11';
+import {checkGateway, createProject, loadProject, pickProject, refreshProjects, renderChat, renderComposerItems, syncWorkspaceAccess, wireChatEvents} from './chat.js?v=20260818-12';
+import {confirmRenameChat, newChat, refreshSidebarChats, renderChatVault} from './chats.js?v=20260818-12';
+import {wireMarkdownActions} from './markdown.js?v=20260818-12';
 import {renderDocs} from './docs.js?v=20260818-10';
 import {renderProviders} from './providers.js?v=20260818-10';
 import {renderLocalAI} from './local-ai.js?v=20260818-10';

@@ -203,6 +203,18 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 
 .message-body blockquote{border-left:3px solid var(--accent);padding:4px 12px;color:var(--text2);background:var(--accent-dim)}
 .message-body code{font:12px/1.5 var(--font-mono);color:#d2a985;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:1px 4px}
 .code-block{margin:12px 0;border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--bg)}
+.file-preview{margin:14px 0;border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:6px;background:var(--surface2);overflow:hidden}
+.file-preview summary{min-height:38px;padding:9px 12px;display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;list-style:none;color:var(--text);font:600 11px/1.3 var(--font-mono)}
+.file-preview summary::-webkit-details-marker{display:none}
+.file-preview summary::after{content:'+';color:var(--accent);font-size:16px;line-height:1}
+.file-preview[open] summary::after{content:'−'}
+.file-preview-title{display:flex;align-items:center;gap:7px}
+.file-preview-title span{color:var(--accent)}
+.file-preview-meta{color:var(--text3);font-size:10px;font-weight:400;white-space:nowrap}
+.file-preview-body{border-top:1px solid var(--border);padding:10px;background:var(--bg)}
+.file-preview-body pre{max-height:300px;overflow:auto;margin:0;padding:4px 2px 10px}
+.file-preview-body code{display:block;color:var(--text2);background:transparent;border:0;padding:0;white-space:pre-wrap;word-break:break-word;font:12px/1.65 var(--font-mono)}
+.file-preview-copy{margin-top:6px}
 .code-header{height:34px;padding:0 10px;display:flex;align-items:center;justify-content:space-between;background:var(--surface3);border-bottom:1px solid var(--border);color:var(--text2);font:10px/1 var(--font-mono)}
 .copy-code{color:var(--text2);font:10px/1 var(--font-mono);padding:5px 7px;border-radius:4px}
 .copy-code:hover{background:var(--surface);color:var(--text)}
@@ -225,6 +237,20 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 
 .typing-dots i:nth-child(2){animation-delay:.16s}.typing-dots i:nth-child(3){animation-delay:.32s}
 @keyframes typing-dot{0%,60%,100%{opacity:.3;transform:translateY(0)}30%{opacity:1;transform:translateY(-3px)}}
 .context-files{margin-top:6px;color:var(--text3);font:11px/1.5 var(--font-mono);overflow-wrap:anywhere}
+.workflow-live{margin:0 0 10px;border:1px solid var(--border);border-radius:5px;background:var(--surface1);padding:7px 9px;color:var(--text2);font-size:11px}
+.workflow-live-title{display:flex;justify-content:space-between;gap:8px;border-bottom:1px solid var(--border);padding-bottom:5px;color:var(--text)}
+.workflow-live-title span{color:var(--accent);font:10px/1.4 var(--font-mono)}
+.workflow-live ol{display:grid;gap:5px;margin:7px 0 0;padding:0;list-style:none}
+.workflow-stage{display:grid;grid-template-columns:16px minmax(0,1fr);gap:5px;align-items:start}
+.workflow-stage>span:first-child{display:flex;align-items:center;justify-content:center;height:16px}
+.workflow-stage b{display:block;font:600 10px/1.35 var(--font-mono);color:var(--text2)}
+.workflow-stage.is-running b{color:var(--accent)}
+.workflow-stage.is-failed b{color:var(--red)}
+.workflow-detail{display:block;color:var(--text3);font-size:10px;line-height:1.35;overflow-wrap:anywhere}
+.workflow-stage-mark{color:var(--green);font-weight:700}
+.workflow-stage-mark.is-failed{color:var(--red)}
+.workflow-spinner{width:9px;height:9px;border:1px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:workflow-spin .8s linear infinite}
+@keyframes workflow-spin{to{transform:rotate(360deg)}}
 /* ── Agent trace ─────────────────────────────────────────────────────────── */
 .workflow-disclosure{margin:0 0 10px;border:1px solid var(--border);border-radius:5px;background:var(--surface1);font-size:11px;color:var(--text2)}
 .workflow-disclosure>summary{cursor:pointer;list-style:none;padding:6px 8px;color:var(--text2);user-select:none}
@@ -397,6 +423,16 @@ menu button[value="default"]:hover{background:var(--accent-hover)}
 /* ── Provider cards ──────────────────────────────────────────────────────── */
 .provider-card{display:grid;grid-template-columns:1fr auto;gap:8px 16px;align-items:start}
 .provider-card-name{font-weight:600;font-size:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.provider-health-dot{display:inline-block;width:8px;height:8px;flex:0 0 8px;border-radius:50%;background:var(--text3);box-shadow:0 0 0 3px #7d85821c;transition:background .16s,box-shadow .16s}
+.provider-health-dot-healthy{background:var(--green);box-shadow:0 0 0 3px var(--green-dim)}
+.provider-health-dot-unavailable{background:var(--red);box-shadow:0 0 0 3px var(--red-dim)}
+.provider-health-dot-testing{background:var(--yellow);box-shadow:0 0 0 3px var(--yellow-dim);animation:provider-health-pulse 1s ease-in-out infinite}
+.provider-health-dot-unconfigured{background:var(--text3);box-shadow:0 0 0 3px #7d85821c}
+.provider-health-refresh{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border:1px solid transparent;border-radius:var(--radius-sm);color:var(--text2);font-size:16px;line-height:1;transition:background .12s,color .12s,border-color .12s}
+.provider-health-refresh:hover,.provider-health-refresh:focus-visible{background:var(--surface3);border-color:var(--border);color:var(--text);outline:none}
+.provider-health-refresh.is-loading{animation:provider-health-spin .8s linear infinite;pointer-events:none;color:var(--accent)}
+@keyframes provider-health-spin{to{transform:rotate(360deg)}}
+@keyframes provider-health-pulse{50%{opacity:.45}}
 .provider-card-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:12px;align-items:start}
 .provider-card-grid>.provider-shell{min-width:0}
 .add-provider-card{display:flex;align-items:center;justify-content:flex-start;gap:12px;min-height:92px;border:1px dashed var(--border2);background:transparent;color:var(--text);cursor:pointer;text-align:left}
@@ -637,6 +673,10 @@ menu button[value="default"]:hover{background:var(--accent-hover)}
   .provider-form-grid{grid-template-columns:1fr}
   .metric-card{min-height:72px}
   .composer-tools .routing-select{width:64px}
+}
+@media (max-width:600px){
+  .provider-card-name{gap:6px}
+  .provider-health-refresh{width:24px;height:24px}
 }
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}

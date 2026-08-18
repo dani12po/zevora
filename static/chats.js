@@ -1,5 +1,5 @@
-import {$, api, escapeHtml, exposeHandlers, loadingState, navigate, pageWrap, setMessages, setPanel, setSidebarOpen, state, userErrorMessage} from './core.js?v=20260818-10';
-import {renderMarkdown} from './markdown.js?v=20260818-10';
+import {$, api, escapeHtml, exposeHandlers, loadingState, navigate, pageWrap, setMessages, setPanel, setSidebarOpen, state, userErrorMessage} from './core.js?v=20260818-11';
+import {renderMarkdown} from './markdown.js?v=20260818-12';
 
 let renamingChatId = null;
 let regenerateMessage = null;
@@ -49,6 +49,17 @@ function fallbackTraceHtml(trace = []) {
     return `<li class="attempt-${escapeHtml(item.status)}"><span class="attempt-mark" aria-hidden="true">${item.status === 'success' ? '✓' : '×'}</span><span><b>${escapeHtml(source + model)}</b><small>${escapeHtml(reason)}</small></span></li>`;
   }).join('');
   return `<ul class="fallback-trace" aria-label="Model attempts">${rows}</ul>`;
+}
+
+function liveWorkflowHtml(progress = {}) {
+  const stages = Array.isArray(progress.stages) ? progress.stages : [];
+  if (!stages.length) return '';
+  const rows = stages.map(item => {
+    const status = item.status || 'completed';
+    const mark = status === 'running' ? '<span class="workflow-spinner" aria-hidden="true"></span>' : status === 'failed' ? '<span class="workflow-stage-mark is-failed" aria-hidden="true">×</span>' : '<span class="workflow-stage-mark" aria-hidden="true">✓</span>';
+    return `<li class="workflow-stage is-${escapeHtml(status)}"><span>${mark}</span><span><b>${escapeHtml(item.stage || 'WORKFLOW')}</b>${item.detail ? `<small class="workflow-detail">${escapeHtml(item.detail)}</small>` : ''}</span></li>`;
+  }).join('');
+  return `<section class="workflow-live" aria-live="polite" aria-label="Live workflow"><div class="workflow-live-title">Workflow <span>${progress.status === 'running' ? 'in progress' : escapeHtml(progress.status || 'completed')}</span></div><ol>${rows}</ol></section>`;
 }
 
 function workflowHtml(meta) {
@@ -129,7 +140,41 @@ export function appendMessage(role, text, meta = {}) {
   if (facts.length) { const info = document.createElement('small'); info.className = 'meta technical-text'; info.textContent = facts.join(' · '); bubble.append(info); }
   if (meta.retry) { const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'retry-message'; retry.textContent = 'Try again'; retry.onclick = meta.retry; bubble.append(retry); }
   content.append(header, bubble); message.append(avatar, content);
+  const liveAttempts = [];
   message.setTypingStatus = label => { const node = message.querySelector('.typing-copy'); if (node) node.textContent = label; };
+  message.setWorkflowProgress = progress => {
+    if (!message.classList.contains('is-typing')) return;
+    bubble.innerHTML = `${liveWorkflowHtml(progress)}<div class="message-body"><span class="typing-copy">${escapeHtml(progress.current?.detail || 'Working on your request')}</span><span class="typing-dots" aria-label="Working"><i></i><i></i><i></i></span></div>`;
+    $('messages').scrollTop = $('messages').scrollHeight;
+  };
+  message.setWorkflowEvent = event => {
+    if (!message.classList.contains('is-typing') || !['attempt_start', 'attempt_result'].includes(event?.type)) return;
+    const local = event.source === 'local_model' || event.route === 'LOCAL' || event.provider === 'local';
+    const source = local ? 'Local Intelligence' : (event.provider || 'Cloud provider');
+    const model = !local && event.model && event.model !== 'auto' ? ` / ${event.model}` : '';
+    const key = [event.source || event.route, event.provider, event.model].join(':');
+    let attempt = null;
+    if (event.type === 'attempt_result') {
+      for (let index = liveAttempts.length - 1; index >= 0; index -= 1) {
+        if (liveAttempts[index].key === key && liveAttempts[index].status === 'running') {
+          attempt = liveAttempts[index];
+          break;
+        }
+      }
+    }
+    const status = event.type === 'attempt_start' ? 'running' : (event.status || 'failed');
+    const detail = status === 'running'
+      ? `Trying ${source}${model}`
+      : status === 'success'
+        ? 'Completed'
+        : (event.failure_message || FAILURE_LABELS[event.failure_reason] || 'Model request failed');
+    if (attempt) Object.assign(attempt, {status, detail});
+    else {
+      attempt = {key, stage: source + model, status, detail};
+      liveAttempts.push(attempt);
+    }
+    message.setWorkflowProgress({status: 'running', stages: liveAttempts, current: attempt});
+  };
   $('messages').append(message); $('messages').scrollTop = $('messages').scrollHeight;
   return message;
 }

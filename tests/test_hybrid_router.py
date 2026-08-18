@@ -193,7 +193,7 @@ def test_routing_experience_stored(tmp_path):
     assert count == 1
 
 
-def test_mature_failure_history_can_override_default_model(monkeypatch):
+def test_active_default_model_remains_first_with_mature_failure_history(monkeypatch):
     preferred = {**EXPENSIVE, 'model_id': 'gpt-default'}
     monkeypatch.setattr(
         'agent.routing.hybrid_router.provider_policy',
@@ -211,10 +211,12 @@ def test_mature_failure_history_can_override_default_model(monkeypatch):
             'attempts': 5, 'success_rate': 1, 'quality_score': .9, 'latency_ms': 1000,
         },
     }
-    result = AdaptiveHybridRouter().decide(
+    candidates = AdaptiveHybridRouter().candidates(
         'explain REST API', [CHEAP, preferred], performance=performance
     )
-    assert result.provider == 'deepseek'
+    assert candidates[0].provider == 'openai'
+    assert candidates[0].model_id == 'gpt-default'
+    assert candidates[1].provider == 'deepseek'
 
 
 def test_immature_history_does_not_override_baseline_default(monkeypatch):

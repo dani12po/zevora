@@ -1,5 +1,7 @@
+import asyncio
 import logging
 from datetime import datetime, timezone
+from ..config import settings
 from ..models.metadata import ModelMetadata
 from ..models.registry import ModelRegistry
 from .errors import ProviderUnavailableError, failure_details
@@ -61,7 +63,9 @@ class ProviderDiscovery:
             failure_reason = None
             failure_message = None
             try:
-                healthy = await provider.health_check()
+                healthy = await asyncio.wait_for(
+                    provider.health_check(), timeout=settings.discovery_timeout_seconds
+                )
                 if not healthy:
                     failure_reason, failure_message = failure_details(
                         ProviderUnavailableError(f'{name} health check failed'),
@@ -77,7 +81,9 @@ class ProviderDiscovery:
             models: list[dict] = []
             if healthy:
                 try:
-                    models = await provider.list_models()
+                    models = await asyncio.wait_for(
+                        provider.list_models(), timeout=settings.discovery_timeout_seconds
+                    )
                     if not models:
                         failure_reason = 'NO_MODELS'
                         failure_message = 'The provider is reachable but returned no usable models.'

@@ -172,7 +172,7 @@ class AdaptiveHybridRouter:
             }
             if use_history:
                 rank = (
-                    -routing_score, not preferred, cost_rank,
+                    not preferred, -routing_score, cost_rank,
                     -policy['routing_priority'], enriched,
                 )
             else:

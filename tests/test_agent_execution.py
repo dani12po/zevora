@@ -29,6 +29,21 @@ def test_selected_workspace_authorizes_write_without_separate_approval(tmp_path)
     ]
 
 
+def test_executor_progress_callback_is_safe_and_secret_free(tmp_path):
+    events = []
+    trace = ProjectAgentExecutor(tmp_path).execute(
+        'inspect workspace',
+        [AgentAction('write_file', {'path': 'note.txt', 'content': 'hello'})],
+        progress_callback=lambda stage, status, detail: events.append((stage, status, detail)),
+    )
+
+    assert trace.observations[0]['ok'] is True
+    assert any(stage == 'ACT' and status == 'running' for stage, status, _ in events)
+    assert any(stage == 'ACT' and status == 'completed' for stage, status, _ in events)
+    assert all(len(detail) < 240 for _, _, detail in events)
+    assert all('content' not in detail for _, _, detail in events)
+
+
 def test_approved_write_and_read_are_observed(tmp_path):
     executor = ProjectAgentExecutor(tmp_path)
 
@@ -231,6 +246,9 @@ def test_approved_html_write_returns_authoritative_local_receipt(tmp_path, monke
     }
     assert str(target.resolve()) in result['response']
     assert 'write_file' in result['response']
+    assert html in result['response']
+    assert '1 lines' in result['response']
+    assert f'{len(html.encode("utf-8"))} bytes' in result['response']
     with intelligence.connection() as conn:
         knowledge = conn.execute('SELECT provider, model FROM knowledge').fetchone()
     assert dict(knowledge) == {'provider': 'local', 'model': 'mcp-tools'}

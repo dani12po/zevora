@@ -47,7 +47,10 @@ class Settings(BaseSettings):
 
     # ── Provider discovery, custom runtimes, and context economy ─────────────
     model_registry_ttl_hours: int = 24
+    # Discovery is a preflight step; it must not consume the full generation timeout.
+    discovery_timeout_seconds: int = 8
     provider_timeout_seconds: int = 60
+    routing_max_attempts: int = 2
     custom_runtime_max_concurrency: int = 2
     custom_runtime_timeout_seconds: int = 120
     custom_runtime_max_output_mb: int = 10

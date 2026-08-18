@@ -1,6 +1,7 @@
 import {$, api, badge, emptyState, escapeHtml, exposeHandlers, pageWrap, setPanel, userErrorMessage} from './core.js?v=20260818-10';
 
 const customManifestCache = new Map();
+const providerHealthCache = new Map();
 
 const LABELS = {local:'Zevora Local AI',openai:'OpenAI',xai:'xAI (Grok)',nvidia:'NVIDIA NIM',deepseek:'DeepSeek',gemini:'Google Gemini',anthropic:'Anthropic'};
 const DESCRIPTIONS = {
@@ -18,6 +19,50 @@ function providerHealth(provider, modelCount) {
   if (health === 'failed' || health === 'unavailable') return badge('unavailable','red');
   if (!provider.key_set && provider.provider !== 'local') return badge('not configured','grey');
   return badge(health === 'healthy' ? 'no models' : health, 'yellow');
+}
+
+function healthDotState(provider, health = null) {
+  const local = provider.provider === 'local';
+  if (local) {
+    const runtime = provider.runtime_status || {};
+    return runtime.loaded || (runtime.configured && runtime.model_exists) ? 'healthy' : runtime.configured ? 'unavailable' : 'unconfigured';
+  }
+  const normalized = String(health || provider.health_status || provider.state || '').toLowerCase();
+  if (!provider.key_set && !provider.credential?.configured) return 'unconfigured';
+  if (normalized === 'healthy' || normalized === 'trusted_runtime' || normalized === 'loaded' || normalized === 'ready') return 'healthy';
+  if (normalized === 'testing') return 'testing';
+  if (normalized === 'failed' || normalized === 'unavailable') return 'unavailable';
+  return 'unconfigured';
+}
+
+function healthDot(id, provider, health = null) {
+  const state = healthDotState(provider, health);
+  const label = state === 'healthy' ? 'Healthy' : state === 'unavailable' ? 'Unavailable' : state === 'testing' ? 'Checking' : 'Not checked';
+  return `<span id="health-dot-${id}" class="provider-health-dot provider-health-dot-${state}" data-health-state="${state}" title="API health: ${label}" aria-label="API health: ${label}"></span>`;
+}
+
+function healthRefreshButton(id, custom = false, local = false, isRuntime = false) {
+  return `<button class="provider-health-refresh" type="button" title="Refresh API health" aria-label="Refresh API health" onclick="refreshProviderHealth('${id}', ${custom}, ${local}, ${isRuntime}, this)">↻</button>`;
+}
+
+function updateHealthIndicator(id, provider, health, modelCount = 0) {
+  const dot = $(`health-dot-${id}`);
+  if (!dot) return;
+  const state = healthDotState(provider, health);
+  dot.className = `provider-health-dot provider-health-dot-${state}`;
+  dot.dataset.healthState = state;
+  const label = state === 'healthy' ? 'Healthy' : state === 'unavailable' ? 'Unavailable' : state === 'testing' ? 'Checking' : 'Not checked';
+  dot.title = `API health: ${label}`;
+  dot.setAttribute('aria-label', `API health: ${label}`);
+  const badgeTarget = $(`health-badge-${id}`);
+  if (!badgeTarget) return;
+  if (provider.provider === 'local') {
+    const runtime = provider.runtime_status || {};
+    const localState = runtime.loaded ? 'loaded' : runtime.configured ? 'ready' : 'unavailable';
+    badgeTarget.innerHTML = localState === 'loaded' || localState === 'ready' ? badge(`local ${localState}`, 'green') : badge('local unavailable', 'red');
+  } else {
+    badgeTarget.innerHTML = providerHealth({...provider, health_status: health || state}, modelCount);
+  }
 }
 
 function normalizeCustomProvider(manifest, modelCounts) {
@@ -45,7 +90,7 @@ function providerCard(provider, statusMap, modelCounts) {
     const state = runtime.loaded ? 'loaded' : runtime.configured ? 'ready' : 'unavailable';
     const stateBadge = state === 'loaded' || state === 'ready' ? badge(`local ${state}`, 'green') : badge('local unavailable', 'red');
     return `<div class="card provider-shell"><div class="provider-card">
-      <div class="provider-card-name">${LABELS.local} ${stateBadge}</div><div class="technical-text">${runtime.runtime || 'llamacpp'}</div>
+      <div class="provider-card-name"><span>${LABELS.local}</span>${healthDot('local', provider)}${healthRefreshButton('local', false, true)} <span id="health-badge-local">${stateBadge}</span></div><div class="technical-text">${runtime.runtime || 'llamacpp'}</div>
       <div class="provider-description">${DESCRIPTIONS.local}</div><div class="card-grid provider-stats">
         <div class="card-sm card"><div class="card-lbl">Model</div><div class="card-val technical-text">${escapeHtml(runtime.model_id || provider.default_model || 'zevora')}</div></div>
         <div class="card-sm card"><div class="card-lbl">GGUF</div><div class="card-val">${runtime.model_exists ? `${runtime.model_size_mb} MB` : 'Missing'}</div></div>
@@ -59,8 +104,10 @@ function providerCard(provider, statusMap, modelCounts) {
   const name = escapeHtml(provider.name || LABELS[provider.provider] || provider.provider);
   const description = escapeHtml(provider.description || DESCRIPTIONS[provider.provider] || 'Custom AI provider');
   const runtimeDetails = custom && provider.protocol === 'custom-runtime' ? `<details class="provider-runtime-details"><summary>Runtime source and trust</summary><div class="runtime-source-row"><button class="btn-sm" onclick="loadRuntimeSource('${id}', this)">Load source</button><button class="btn-sm" onclick="trustCustomProvider('${id}')" ${provider.runtime?.trusted ? 'disabled' : ''}>${provider.runtime?.trusted ? 'Trusted' : 'Trust runtime'}</button></div><textarea id="runtime-source-${id}" class="runtime-source hidden" rows="8" placeholder="Load the stored runtime source before editing"></textarea></details>` : '';
+  const reportedHealth = statusMap[provider.provider] || provider.health_status;
+  const resolvedHealth = reportedHealth === 'disabled' ? providerHealthCache.get(provider.provider) : reportedHealth;
   return `<div class="card provider-shell ${custom ? 'provider-custom' : ''}"><div class="provider-card">
-    <div class="provider-card-name">${name} ${custom ? customBadge() : ''} ${providerHealth({...provider, health_status: statusMap[provider.provider] || provider.health_status}, modelCount)}</div>
+    <div class="provider-card-name"><span>${name}</span>${healthDot(id, {...provider, health_status: resolvedHealth})}${healthRefreshButton(id, custom, false, provider.protocol === 'custom-runtime')} ${custom ? customBadge() : ''} <span id="health-badge-${id}">${providerHealth({...provider, health_status: resolvedHealth}, modelCount)}</span></div>
     <div class="provider-summary"><span>${modelCount} models</span><label class="toggle" title="Enabled"><input type="checkbox" id="toggle-${id}" ${provider.enabled ? 'checked' : ''} onchange="${custom ? `toggleCustomProvider('${id}', this.checked)` : `markProviderDirty('${id}')`}"><span class="toggle-slider"></span></label></div>
     <div class="provider-description">${description}</div>
     <div class="provider-fields"><div class="provider-field"><label>API Key</label><span class="key-display" id="key-display-${id}">${provider.key_set ? `********${escapeHtml(provider.key_masked.slice(-4))}` : 'Not set'}</span><button class="btn-sm" onclick="${custom ? `toggleCustomKeyEdit('${id}')` : `toggleKeyEdit('${id}')`}">Edit</button></div>
@@ -90,7 +137,10 @@ export async function renderProviders() {
   const [statuses, config, models, manifests] = await Promise.all([api('/api/providers'), api('/api/providers/config'), api('/api/models'), api('/api/provider-manifests').catch(() => ({providers:[]}))]);
   const counts = {}, statusMap = {};
   models.forEach(model => { counts[model.provider] = (counts[model.provider] || 0) + 1; });
-  statuses.forEach(provider => { statusMap[provider.provider] = provider.health_status; });
+  statuses.forEach(provider => {
+    statusMap[provider.provider] = provider.health_status;
+    if (provider.health_status && provider.health_status !== 'disabled') providerHealthCache.set(provider.provider, provider.health_status);
+  });
   const custom = (manifests.providers || []).map(item => normalizeCustomProvider(item, counts));
   customManifestCache.clear();
   custom.forEach(provider => customManifestCache.set(provider.provider, provider));
@@ -138,7 +188,19 @@ export async function saveCustomProviderCard(id) {
   await providerAction(async()=>{await api('/api/provider-manifests',{method:'POST',body:JSON.stringify({manifest:payload,credential_value:key?.value?.trim() || null,script})});await renderProviders();});
 }
 export async function toggleCustomProvider(id, enabled) { await providerAction(async()=>{await api(`/api/provider-manifests/${id}/enabled`,{method:'POST',body:JSON.stringify({enabled})});await renderProviders();}); }
-export async function testCustomProvider(id,isRuntime) { if (isRuntime && !confirm('Run this provider script once with its declared credential and permissions?')) return; await providerAction(async()=>{const result=await api(`/api/provider-manifests/${id}/${isRuntime?'runtime-test':'test'}`,{method:'POST',body:JSON.stringify({runtime_approved:isRuntime})});showProviderMessage(result.result?.success?'Connection succeeded':result.result?.message||'Connection failed',!result.result?.success);}); }
+export async function testCustomProvider(id,isRuntime) {
+  if (isRuntime && !confirm('Run this provider script once with its declared credential and permissions?')) return;
+  const provider = customManifestCache.get(id) || {provider:id,key_set:true};
+  try {
+    const result = await api(`/api/provider-manifests/${id}/${isRuntime?'runtime-test':'test'}`,{method:'POST',body:JSON.stringify({runtime_approved:isRuntime})});
+    const success = Boolean(result.result?.success);
+    updateHealthIndicator(id, provider, success ? 'healthy' : 'unavailable', provider.model_count || 0);
+    showProviderMessage(success ? 'Connection succeeded' : result.result?.message || 'Connection failed', !success);
+  } catch (error) {
+    updateHealthIndicator(id, provider, 'unavailable', provider.model_count || 0);
+    showProviderMessage(userErrorMessage(error), true);
+  }
+}
 export async function trustCustomProvider(id) { if(confirm('Trust this runtime for future provider requests?')) await providerAction(async()=>{await api(`/api/provider-manifests/${id}/trust`,{method:'POST',body:JSON.stringify({approved:true})});await renderProviders();}); }
 export async function removeCustomProvider(id) { if(confirm(`Delete "${id}" and its stored runtime source?`)) await providerAction(async()=>{await api(`/api/provider-manifests/${id}`,{method:'DELETE'});await renderProviders();}); }
 export async function loadRuntimeSource(id, button) { button.disabled=true; try { const data=await api(`/api/provider-manifests/${id}/source`); const source=$(`runtime-source-${id}`); source.value=data.source || ''; source.classList.remove('hidden'); source.addEventListener('input',()=>markProviderDirty(id),{once:true}); } catch (error) { showProviderMessage(userErrorMessage(error),true); } finally { button.disabled=false; } }
@@ -151,6 +213,23 @@ export function cancelCustomKeyEdit(id) { cancelKeyEdit(id); }
 function showProviderSave(id, text, tone = 'success') { const message = $(`save-msg-${id}`); if (!message) return; message.textContent = text; message.classList.toggle('error-text', tone === 'error'); message.classList.toggle('warning-text', tone === 'warning'); message.classList.add('show'); }
 function verificationMessage(result, action = 'save') { const saved = action === 'save'; if (result.status === 'healthy' && result.models_discovered > 0) return {text: `${saved ? 'Saved' : 'Test passed'} - ${result.models_discovered} models discovered`, tone: 'success'}; if (result.status === 'healthy' && result.models_discovered === 0) return {text: 'Provider connected, but no models were discovered.', tone: 'warning'}; if (result.status === 'unavailable') return {text: `${saved ? 'Key saved, but the provider could not be verified' : 'Connection test failed'}${result.failure_reason ? ` (${result.failure_reason})` : ''}. ${result.failure_message || 'Check the key and try again.'}`, tone: 'error'}; if (result.status === 'unconfigured') return {text: saved ? 'Key was not saved or the provider is not configured.' : 'Connection test could not run because the provider is not configured.', tone: 'warning'}; return {text: result.failure_message || `Provider status: ${result.status}`, tone: 'warning'}; }
 export async function saveProvider(id) { const button=$(`save-btn-${id}`), key=$(`key-input-${id}`), priority=Number.parseInt($(`prio-${id}`)?.value,10); button.classList.add('btn-loading'); try { const result=await api('/api/providers/config',{method:'POST',body:JSON.stringify({provider:id,base_url:$(`url-${id}`)?.value||null,default_model:$(`model-${id}`)?.value?.trim()||null,routing_priority:Number.isNaN(priority)?null:priority,enabled:$(`toggle-${id}`)?.checked??null,supports_vision:$(`vision-${id}`)?.checked??null,api_key:key?.value?.trim()||null})}); await renderProviders(); const message=verificationMessage(result); showProviderSave(id,message.text,message.tone); button.disabled=true; if(key){key.value='';cancelKeyEdit(id);} } catch(error){showProviderSave(id,userErrorMessage(error),'error');} finally{button.classList.remove('btn-loading');} }
-export async function testProvider(id, button = null) { if (button) button.classList.add('btn-loading'); try { const result = await api(`/api/providers/${id}/test`, {method:'POST'}); await renderProviders(); const message = verificationMessage(result, 'test'); showProviderSave(id, message.text, message.tone); } catch (error) { showProviderSave(id, userErrorMessage(error), 'error'); } finally { if (button) button.classList.remove('btn-loading'); } }
+export async function testProvider(id, button = null) { if (button) button.classList.add('btn-loading'); try { const result = await api(`/api/providers/${id}/test`, {method:'POST'}); const provider = {provider:id, key_set:result.status !== 'unconfigured', health_status:result.status}; providerHealthCache.set(id, result.status); updateHealthIndicator(id, provider, result.status, result.models_discovered); const message = verificationMessage(result, 'test'); showProviderSave(id, message.text,message.tone); } catch (error) { providerHealthCache.set(id, 'unavailable'); updateHealthIndicator(id, {provider:id, key_set:true}, 'unavailable'); showProviderSave(id, userErrorMessage(error), 'error'); } finally { if (button) button.classList.remove('btn-loading'); } }
 
-exposeHandlers({analyzeProviderSource,saveCustomProvider,saveCustomProviderCard,importProviderJson,toggleAddProviderForm,toggleCustomProvider,testCustomProvider,trustCustomProvider,removeCustomProvider,loadRuntimeSource,exportCustomProvider,testProvider,markProviderDirty,toggleKeyEdit,cancelKeyEdit,toggleCustomKeyEdit,cancelCustomKeyEdit,saveProvider});
+export async function refreshProviderHealth(id, custom = false, local = false, isRuntime = false, button = null) {
+  if (button) { button.classList.add('is-loading'); button.disabled = true; }
+  try {
+    if (local) {
+      const providers = await api('/api/providers');
+      const provider = providers.find(item => item.provider === 'local') || {provider:'local'};
+      updateHealthIndicator(id, provider, healthDotState(provider), provider.runtime_status?.loaded ? 1 : 0);
+    } else if (custom) {
+      await testCustomProvider(id, isRuntime);
+    } else {
+      await testProvider(id);
+    }
+  } finally {
+    if (button) { button.classList.remove('is-loading'); button.disabled = false; }
+  }
+}
+
+exposeHandlers({analyzeProviderSource,saveCustomProvider,saveCustomProviderCard,importProviderJson,toggleAddProviderForm,toggleCustomProvider,testCustomProvider,trustCustomProvider,removeCustomProvider,loadRuntimeSource,exportCustomProvider,testProvider,refreshProviderHealth,markProviderDirty,toggleKeyEdit,cancelKeyEdit,toggleCustomKeyEdit,cancelCustomKeyEdit,saveProvider});

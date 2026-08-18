@@ -1,1 +1,5 @@
-{"routing_mode": "AUTO"}
+{
+  "routing_mode": "AUTO",
+  "cloud_fallback": true,
+  "cost_optimization": true
+}
