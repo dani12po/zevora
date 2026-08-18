@@ -51,18 +51,34 @@ class ProjectAgentExecutor:
 
     def execute(self, prompt: str, actions: list[AgentAction] | None = None,
                 project_files: list[str] | None = None,
-                progress_callback: Callable[[str, str, str], None] | None = None) -> AgentTrace:
+                progress_callback: Callable[[str, str, str], None] | None = None,
+                event_callback: Callable[[dict[str, Any]], None] | None = None) -> AgentTrace:
         trace = AgentTrace()
         started = monotonic()
 
         def emit(stage: str, status: str = 'completed', detail: str = '') -> None:
-            if progress_callback is None:
+            if progress_callback is not None:
+                try:
+                    progress_callback(stage, status, detail)
+                except Exception:
+                    # Progress is observational and must never affect tool execution.
+                    pass
+
+        def emit_event(event: str, stage: str, status: str, title: str,
+                       message: str = '', data: dict[str, Any] | None = None) -> None:
+            if event_callback is None:
                 return
+            payload = {
+                'event': event, 'stage': stage, 'status': status,
+                'title': title, 'message': message,
+            }
+            if data:
+                payload['data'] = data
             try:
-                progress_callback(stage, status, detail)
+                event_callback(payload)
             except Exception:
-                # Progress is observational and must never affect tool execution.
-                return
+                # Structured telemetry is observational and must never affect execution.
+                pass
         max_iterations = max(1, min(self.MAX_ITERATIONS, settings.max_agent_iterations))
         max_tool_calls = max(1, min(self.MAX_TOOL_CALLS, settings.max_agent_tool_calls))
         timeout_seconds = max(1, min(self.TIMEOUT_SECONDS, settings.agent_timeout_seconds))
@@ -100,7 +116,18 @@ class ProjectAgentExecutor:
             return trace
 
         for index, action in enumerate(safe_actions):
+            is_command = action.tool in self.VERIFY_TOOLS or action.tool == 'execute_command'
+            is_file = action.tool in {
+                'create_file', 'write_file', 'edit_file', 'delete_file', 'move_file', 'copy_file',
+            }
             emit('ACT', 'running', f'Running {action.tool}')
+            emit_event(
+                'command_started' if is_command else 'tool_started',
+                'EXECUTION', 'running', 'Running workspace action',
+                action.tool,
+                {'tool': action.tool, 'index': index, 'path': action.arguments.get('path')}
+                if is_file else {'tool': action.tool, 'index': index},
+            )
             if monotonic() - started >= timeout_seconds:
                 trace.observations.append({
                     'index': index, 'tool': action.tool, 'ok': False,
@@ -129,11 +156,35 @@ class ProjectAgentExecutor:
                     'arguments': action.arguments, 'purpose': action.purpose,
                 })
             trace.observations.append(observation)
+            result_status = 'completed' if observation['ok'] else 'failed'
             emit(
-                'ACT',
-                'completed' if observation['ok'] else 'failed',
+                'ACT', result_status,
                 f'{action.tool} ' + ('completed' if observation['ok'] else 'failed'),
             )
+            if is_file:
+                file_event = {
+                    'create_file': 'file_created', 'write_file': 'file_modified',
+                    'edit_file': 'file_modified', 'delete_file': 'file_deleted',
+                    'move_file': 'file_moved', 'copy_file': 'file_copied',
+                }.get(action.tool, 'tool_completed')
+                output_data = output if isinstance(output, dict) else {}
+                path = output_data.get('path') or action.arguments.get('path')
+                emit_event(
+                    file_event, 'EXECUTION', result_status,
+                    'File action completed' if observation['ok'] else 'File action failed',
+                    str(path or action.tool),
+                    {'tool': action.tool, 'path': path, 'ok': observation['ok'],
+                     'bytes': output_data.get('bytes'), 'line_count': output_data.get('line_count')},
+                )
+            else:
+                emit_event(
+                    'command_completed' if is_command else 'tool_completed',
+                    'VERIFICATION' if is_command else 'EXECUTION', result_status,
+                    'Command completed' if is_command and observation['ok'] else
+                    'Command failed' if is_command else 'Tool completed',
+                    action.tool,
+                    {'tool': action.tool, 'ok': observation['ok']},
+                )
 
         act_status = 'failed' if len(requested_actions) > max_tool_calls else 'completed'
         trace.stage('ACT', status=act_status, detail={
@@ -147,18 +198,29 @@ class ProjectAgentExecutor:
         ]
         if verification:
             emit('VERIFY', 'running', 'Verifying workspace changes')
+            emit_event('verification_started', 'VERIFICATION', 'running',
+                       'Verification started', f'{len(verification)} check(s)')
             trace.verified = all(item['ok'] for item in verification)
             trace.stage(
                 'VERIFY', 'completed' if trace.verified else 'failed',
                 {'checks': len(verification)},
             )
-            emit(
-                'VERIFY',
-                'completed' if trace.verified else 'failed',
-                'Workspace verification completed' if trace.verified else 'Workspace verification failed',
+            verification_status = 'completed' if trace.verified else 'failed'
+            verification_message = (
+                'Workspace verification completed' if trace.verified
+                else 'Workspace verification failed'
+            )
+            emit('VERIFY', verification_status, verification_message)
+            emit_event(
+                'verification_passed' if trace.verified else 'verification_failed',
+                'VERIFICATION', verification_status,
+                'Verification passed' if trace.verified else 'Verification failed',
+                verification_message, {'checks': len(verification)},
             )
         else:
             trace.verified = None
             trace.stage('VERIFY', status='skipped', detail='No verification action requested')
             emit('VERIFY', 'skipped', 'No verification action requested')
+            emit_event('verification_skipped', 'VERIFICATION', 'skipped',
+                       'Verification skipped', 'No verification action requested')
         return trace

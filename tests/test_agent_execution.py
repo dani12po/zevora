@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 from fastapi import HTTPException
@@ -42,6 +43,22 @@ def test_executor_progress_callback_is_safe_and_secret_free(tmp_path):
     assert any(stage == 'ACT' and status == 'completed' for stage, status, _ in events)
     assert all(len(detail) < 240 for _, _, detail in events)
     assert all('content' not in detail for _, _, detail in events)
+
+
+def test_executor_structured_events_are_bounded_and_grounded(tmp_path):
+    events = []
+    trace = ProjectAgentExecutor(tmp_path).execute(
+        'write and verify',
+        [AgentAction('write_file', {'path': 'note.txt', 'content': 'hello'})],
+        event_callback=events.append,
+    )
+
+    assert trace.observations[0]['ok'] is True
+    assert [item['event'] for item in events[:2]] == ['tool_started', 'file_modified']
+    assert events[0]['stage'] == 'EXECUTION'
+    assert events[1]['data']['path'] == 'note.txt'
+    assert 'content' not in json.dumps(events)
+    assert all(len(item.get('message', '')) <= 240 for item in events)
 
 
 def test_approved_write_and_read_are_observed(tmp_path):

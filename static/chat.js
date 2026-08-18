@@ -3,6 +3,7 @@ import {appendMessage, configureMessageActions, newChat, refreshSidebarChats, re
 
 const LIMITS = {image:8_000_000,pdf:12_000_000,text:2_000_000};
 let projectSelectionGeneration = 0;
+let activeRequestId = null;
 
 function beginProjectSelection() { projectSelectionGeneration += 1; return projectSelectionGeneration; }
 function isCurrentProjectSelection(generation) { return generation === projectSelectionGeneration; }
@@ -14,7 +15,7 @@ export function syncWorkspaceAccess() {
   if ($('project-label') && location.pathname === '/') $('project-label').textContent = ready ? `Project connected - ${name}` : 'Chat only - select a folder to let the agent work with files';
 }
 
-function syncComposerState() { const button = $('composer')?.querySelector('button[type=submit]'); if (button) button.disabled = state.isSending || !state.gatewayReady; syncWorkspaceAccess(); }
+function syncComposerState() { const button = $('composer')?.querySelector('button[type=submit]'); if (button) button.disabled = state.isSending || !state.gatewayReady; $('stop-request')?.classList.toggle('hidden', !state.isSending || !activeRequestId); syncWorkspaceAccess(); }
 
 let gatewayCheckPromise = null;
 
@@ -78,11 +79,12 @@ function streamError(payload = {}) {
 
 async function streamChat(payload, onEvent) {
   const controller = new AbortController();
-  let idleTimer = setTimeout(() => controller.abort(), 25000);
+  let idleTimer = setTimeout(() => controller.abort(), 35000);
   const resetIdleTimer = () => {
     clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => controller.abort(), 25000);
+    idleTimer = setTimeout(() => controller.abort(), 35000);
   };
+  let lastSequence = 0;
   try {
     const base = window.ZEVORA_GATEWAY_URL || window.location.origin;
     const response = await fetch(base + '/api/chat/stream', {
@@ -108,7 +110,12 @@ async function streamChat(payload, onEvent) {
         const data = frame.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
         if (!data) continue;
         const event = JSON.parse(data);
-        onEvent?.(event);
+        resetIdleTimer();
+        if (event.type === 'workflow') {
+          if (event.sequence && event.sequence <= lastSequence) continue;
+          lastSequence = Math.max(lastSequence, event.sequence || 0);
+          onEvent?.(event);
+        }
         if (event.type === 'error') throw streamError(event.error);
         if (event.type === 'final') final = event.data;
       }
@@ -123,16 +130,23 @@ async function streamChat(payload, onEvent) {
 function watchProgress(requestId, message){
   let stopped = false;
   let timer = null;
+  let sequence = 0;
+  const events = [];
   const poll = async () => {
     if (stopped) return;
     try {
-      const progress = await api(`/api/chat/progress/${encodeURIComponent(requestId)}`);
-      message.setWorkflowProgress?.(progress);
-      if (progress.status !== 'running') return;
+      const progress = await api(`/api/chat/progress/${encodeURIComponent(requestId)}?after=${sequence}`);
+      for (const event of progress.events || []) {
+        if (event.sequence <= sequence) continue;
+        sequence = event.sequence;
+        events.push(event);
+      }
+      message.setWorkflowProgress?.({...progress, events});
+      if (['completed','failed','cancelled'].includes(progress.status)) return;
     } catch (_) {
       // The initial poll can race request registration; retry while the chat call runs.
     }
-    if (!stopped) timer = setTimeout(poll, 350);
+    if (!stopped) timer = setTimeout(poll, 500);
   };
   poll();
   return () => { stopped = true; if (timer) clearTimeout(timer); };
@@ -174,7 +188,7 @@ export async function send(replay=null){
   try{
     if(!state.activeChat)await newChat();
     const projectId=$('project-select').value||null;
-    const requestId=newProgressId();
+    const requestId=newProgressId();activeRequestId=requestId;syncComposerState();
     if(!request.retrying)userMessage=appendMessage('user',content,{attachments:request.attachments});
     $('prompt').value='';resizePrompt();
     const activity=request.actions.length?'Running workspace actions':'Generating response';
@@ -207,11 +221,19 @@ export async function send(replay=null){
       if(error.code==='PROJECT_REQUIRED')$('project-dialog').showModal();
       if(!error.code){state.gatewayReady=false;await checkGateway();}
     }
-  }finally{stopProgress();state.isSending=false;syncComposerState();renderComposerItems();$('prompt').focus();}
+  }finally{stopProgress();activeRequestId=null;state.isSending=false;syncComposerState();renderComposerItems();$('prompt').focus();}
+}
+
+async function cancelActiveRequest(){
+  if(!activeRequestId)return;
+  const requestId=activeRequestId;
+  $('route-status').textContent='Stopping request';
+  try{await api(`/api/chat/cancel/${encodeURIComponent(requestId)}`,{method:'POST'});}
+  catch(error){$('route-status').textContent=`Stop failed - ${userErrorMessage(error)}`;}
 }
 export async function approvePendingActions(event){event.preventDefault();if(!state.pendingApprovalRequest)return;const indexes=new Set(state.pendingApprovalRequest.approvalIndexes||[]);state.pendingApprovalRequest.actions=state.pendingApprovalRequest.actions.map((action,index)=>({...action,approved:action.approved||indexes.has(index)}));const{approvalIndexes,...replay}=state.pendingApprovalRequest;$('approval-dialog').close();state.pendingApprovalRequest=null;await send(replay);}
 
 async function refreshRoutingSelectors(){const mode=$('routing-override');if(!mode)return;const models=await api('/api/models').catch(()=>[]),providers=[...new Set(models.map(item=>item.provider))];$('routing-provider').innerHTML=providers.map(item=>`<option>${escapeHtml(item)}</option>`).join('');const sync=()=>{$('routing-model').innerHTML=models.filter(item=>item.provider===$('routing-provider').value).map(item=>`<option value="${escapeHtml(item.model_id)}">${escapeHtml(item.model_id)}</option>`).join('');};$('routing-provider').onchange=sync;sync();mode.onchange=()=>{const explicit=['provider','model'].includes(mode.value);$('routing-provider').classList.toggle('hidden',!explicit);$('routing-model').classList.toggle('hidden',mode.value!=='model');};mode.onchange();}
 export function renderChat(){ $('composer').classList.remove('hidden');refreshRoutingSelectors();$('chat-title').textContent=state.activeChat?'Chat':'What are you building?';if(!state.activeChat){setMessages(`<div class="empty">${stateIndicator('local','Local workspace')}<b>ZEVORA</b><p>Open a project folder, then ask the agent to create, edit, inspect, or test files.</p><div class="actions"><button id="chat-open-project">Open folder</button><button id="chat-create-project">Create project</button></div><a class="empty-docs" href="/docs" data-route>Read the quick start</a></div>`);$('chat-open-project').onclick=()=>$('project-dialog').showModal();$('chat-create-project').onclick=()=>$('create-dialog').showModal();}syncWorkspaceAccess();}
 
-export function wireChatEvents(){ $('project-select').onchange=()=>{beginProjectSelection();syncWorkspaceAccess();};$('composer').onsubmit=event=>{event.preventDefault();send();};$('prompt').oninput=()=>{renderComposerItems();resizePrompt();};$('prompt').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send();}};resizePrompt();$('attach-file').onclick=()=>$('file-input').click();$('file-input').onchange=async event=>{try{await addAttachments(event.target.files);}catch(error){$('route-status').textContent=userErrorMessage({code:'INVALID_ATTACHMENT',message:error.message});}finally{event.target.value='';}};$('add-action').onclick=openActionDialog;$('action-tool').onchange=event=>{$('action-arguments').value=JSON.stringify(actionTemplate(event.target.value),null,2);};$('confirm-add-action').onclick=addStructuredAction;$('approve-actions').onclick=approvePendingActions;$('reject-actions').onclick=()=>{state.pendingApprovalRequest=null;};}
+export function wireChatEvents(){ $('project-select').onchange=()=>{beginProjectSelection();syncWorkspaceAccess();};$('composer').onsubmit=event=>{event.preventDefault();send();};$('stop-request').onclick=cancelActiveRequest;$('prompt').oninput=()=>{renderComposerItems();resizePrompt();};$('prompt').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send();}};resizePrompt();$('attach-file').onclick=()=>$('file-input').click();$('file-input').onchange=async event=>{try{await addAttachments(event.target.files);}catch(error){$('route-status').textContent=userErrorMessage({code:'INVALID_ATTACHMENT',message:error.message});}finally{event.target.value='';}};$('add-action').onclick=openActionDialog;$('action-tool').onchange=event=>{$('action-arguments').value=JSON.stringify(actionTemplate(event.target.value),null,2);};$('confirm-add-action').onclick=addStructuredAction;$('approve-actions').onclick=approvePendingActions;$('reject-actions').onclick=()=>{state.pendingApprovalRequest=null;};}

@@ -61,13 +61,12 @@ def test_chat_stream_emits_final_and_persists_once(monkeypatch, tmp_path):
     chat = manager.create_chat('New chat')
 
     async def fake_task(request):
-        callback = main._stream_event_callback.get()
-        await callback({
+        await main._emit_stream_event({
             'type': 'attempt_start', 'source': 'cloud_provider',
             'route': 'CLOUD', 'provider': 'openai', 'model': 'gpt-test',
             'status': 'running',
         })
-        await callback({
+        await main._emit_stream_event({
             'type': 'attempt_result', 'source': 'cloud_provider',
             'route': 'CLOUD', 'provider': 'openai', 'model': 'gpt-test',
             'status': 'success',
@@ -86,8 +85,15 @@ def test_chat_stream_emits_final_and_persists_once(monkeypatch, tmp_path):
     assert 'text/event-stream' in response.headers['content-type']
     frames = [line[6:] for line in response.text.splitlines() if line.startswith('data: ')]
     events = [json.loads(frame) for frame in frames]
-    assert [event['type'] for event in events] == ['attempt_start', 'attempt_result', 'final']
+    assert [event['type'] for event in events] == ['workflow'] * 5 + ['final']
+    assert [event['sequence'] for event in events[:-1]] == [1, 2, 3, 4, 5]
+    assert events[2]['event'] == 'provider_selected'
+    assert events[3]['event'] == 'provider_selected'
+    assert events[3]['status'] == 'completed'
     assert events[-1]['data']['response'] == 'streamed result'
+    persisted = events[-1]['data']['workflow']
+    assert persisted['status'] == 'completed'
+    assert persisted['events'][-1]['event'] == 'stage_completed'
     stored = manager.get_chat(chat['id'])['messages']
     assert [(item['role'], item['content']) for item in stored] == [
         ('user', 'hello'), ('assistant', 'streamed result'),
@@ -113,16 +119,53 @@ def test_chat_contract_uses_existing_task_engine(monkeypatch, tmp_path):
 def test_chat_progress_lifecycle_redacts_and_bounds_details():
     request_id = 'zv-progress-test'
     main._progress_start(request_id)
-    main._progress_update(request_id, 'ACT', 'token=sk-this-must-not-leak ' + ('x' * 400), 'running')
+    main._progress_update(request_id, 'ACT', 'token=sk-this-must-not-leak ' + ('x' * 600), 'running')
     progress = main.chat_progress(request_id)
 
     assert progress['status'] == 'running'
     assert progress['current']['status'] == 'running'
-    assert '[REDACTED]' in progress['current']['detail']
-    assert len(progress['current']['detail']) <= 240
+    assert progress['current']['request_id'] == request_id
+    assert progress['current']['sequence'] == 1
+    assert progress['current']['event'] == 'stage_started'
+    assert '[REDACTED]' in progress['current']['message']
+    assert len(progress['current']['message']) <= 500
 
     main._progress_finish(request_id)
     assert main.chat_progress(request_id)['status'] == 'completed'
+
+
+def test_cancel_chat_request_marks_shared_run_cancelled():
+    request_id = 'workflow-cancel'
+    main._progress_start(request_id)
+
+    async def blocked():
+        await asyncio.sleep(60)
+
+    async def exercise():
+        run = asyncio.create_task(blocked())
+        main._chat_runs[request_id] = run
+        result = await main.cancel_chat_request(request_id)
+        return result, run
+
+    result, run = asyncio.run(exercise())
+    assert result == {'ok': True, 'request_id': request_id, 'status': 'cancelled'}
+    assert run.cancelled()
+    assert main.chat_progress(request_id)['status'] == 'cancelled'
+    main._chat_runs.pop(request_id, None)
+
+
+def test_workflow_events_are_ordered_isolated_and_incrementally_pollable():
+    main._progress_start('workflow-a')
+    main._progress_start('workflow-b')
+    main._progress_update('workflow-a', 'ANALYSIS', 'Finding a', 'running')
+    main._progress_update('workflow-a', 'ANALYSIS', 'Finding b')
+    main._progress_update('workflow-b', 'PLAN', 'Other request')
+
+    first = main.chat_progress('workflow-a')
+    assert [item['sequence'] for item in first['events']] == [1, 2]
+    assert all(item['request_id'] == 'workflow-a' for item in first['events'])
+    assert [item['sequence'] for item in main.chat_progress('workflow-a', after=1)['events']] == [2]
+    assert main.chat_progress('workflow-b')['events'][0]['message'] == 'Other request'
 
 
 def test_chat_connects_existing_conversation_to_selected_project(monkeypatch, tmp_path):
@@ -573,6 +616,19 @@ def test_markdown_renderer_supports_safe_variable_length_code_fences():
     assert "button.closest('.file-preview, .code-block')" in source
 
 
+def test_static_chat_workflow_contract():
+    chats_javascript = (ROOT / 'static' / 'chats.js').read_text(encoding='utf-8')
+    chat_javascript = (ROOT / 'static' / 'chat.js').read_text(encoding='utf-8')
+    index_html = (ROOT / 'static' / 'index.html').read_text(encoding='utf-8')
+    assert 'workflow-canonical' in chats_javascript
+    assert 'Advanced trace' in chats_javascript
+    assert "startsWith('file_')" in chats_javascript
+    assert 'api(`/api/chat/cancel/' in chat_javascript
+    assert 'event.sequence' in chat_javascript
+    assert 'heartbeat' in chat_javascript
+    assert 'stop-request' in index_html
+
+
 def test_static_chat_guidance_and_docs_contract():
     root = Path(__file__).resolve().parents[1]
     static = root / 'static'
@@ -710,6 +766,8 @@ def test_static_frontend_module_and_theme_contract():
     chats_javascript = (static / 'chats.js').read_text(encoding='utf-8')
     chat_javascript = (static / 'chat.js').read_text(encoding='utf-8')
     assert 'Workflow' in chats_javascript and 'Verified actions' in chats_javascript
+    assert 'workflow-canonical' in chats_javascript
+    assert 'Advanced trace' in chats_javascript
     assert 'meta.agentic_log' in chats_javascript
     assert 'meta.agent_trace?.observations' in chats_javascript
     assert 'navigator.clipboard.writeText(text)' in chats_javascript

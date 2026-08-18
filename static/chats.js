@@ -51,28 +51,61 @@ function fallbackTraceHtml(trace = []) {
   return `<ul class="fallback-trace" aria-label="Model attempts">${rows}</ul>`;
 }
 
-function liveWorkflowHtml(progress = {}) {
-  const stages = Array.isArray(progress.stages) ? progress.stages : [];
-  if (!stages.length) return '';
-  const rows = stages.map(item => {
-    const status = item.status || 'completed';
-    const mark = status === 'running' ? '<span class="workflow-spinner" aria-hidden="true"></span>' : status === 'failed' ? '<span class="workflow-stage-mark is-failed" aria-hidden="true">×</span>' : '<span class="workflow-stage-mark" aria-hidden="true">✓</span>';
-    return `<li class="workflow-stage is-${escapeHtml(status)}"><span>${mark}</span><span><b>${escapeHtml(item.stage || 'WORKFLOW')}</b>${item.detail ? `<small class="workflow-detail">${escapeHtml(item.detail)}</small>` : ''}</span></li>`;
-  }).join('');
-  return `<section class="workflow-live" aria-live="polite" aria-label="Live workflow"><div class="workflow-live-title">Workflow <span>${progress.status === 'running' ? 'in progress' : escapeHtml(progress.status || 'completed')}</span></div><ol>${rows}</ol></section>`;
+const EVENT_LABELS = {
+  file_created:'Created file', file_modified:'Modified file', file_deleted:'Deleted file',
+  file_moved:'Moved file', file_copied:'Copied file', command_started:'Running command',
+  command_completed:'Command completed', command_failed:'Command failed',
+  verification_started:'Verifying changes', verification_passed:'Verification passed',
+  verification_failed:'Verification failed', provider_selected:'Provider selected',
+  provider_fallback:'Provider fallback', cache_hit:'Cache hit', cache_miss:'Cache miss',
+  final_preparing:'Preparing final response', final_ready:'Final response ready',
+};
+
+function eventMark(status) {
+  if (status === 'running') return '<span class="workflow-spinner" aria-hidden="true"></span>';
+  if (status === 'failed' || status === 'cancelled') return '<span class="workflow-stage-mark is-failed" aria-hidden="true">×</span>';
+  if (status === 'skipped') return '<span class="workflow-stage-mark is-skipped" aria-hidden="true">−</span>';
+  return '<span class="workflow-stage-mark" aria-hidden="true">✓</span>';
 }
 
+function canonicalEvents(progress = {}) {
+  if (Array.isArray(progress.events) && progress.events.length) return progress.events;
+  return (progress.stages || []).map((item, index) => ({
+    sequence:item.sequence || index + 1, stage:item.stage, status:item.status,
+    title:(item.stage || 'Workflow').replaceAll('_', ' '), message:item.detail,
+  }));
+}
+
+function workflowPanel(progress = {}, live = false) {
+  const events = canonicalEvents(progress);
+  if (!events.length) return '';
+  const latestByStage = new Map();
+  events.forEach(item => {
+    const key = item.event?.startsWith('file_') || item.event?.startsWith('command_')
+      ? `${item.stage || 'workflow'}:${item.sequence}`
+      : (item.stage || item.event || item.sequence);
+    latestByStage.set(key, item);
+  });
+  const rows = [...latestByStage.values()].map(item => {
+    const status = item.status || 'completed';
+    const title = EVENT_LABELS[item.event] || item.title || (item.stage || 'Workflow').replaceAll('_', ' ');
+    return `<li class="workflow-stage is-${escapeHtml(status)}"><span>${eventMark(status)}</span><span><b>${escapeHtml(title)}</b>${item.message ? `<small class="workflow-detail">${escapeHtml(item.message)}</small>` : ''}</span></li>`;
+  }).join('');
+  const trace = events.map(item => `<li><code>${escapeHtml(String(item.sequence || ''))}</code><span>${escapeHtml(item.event || item.stage || 'workflow')}</span><small>${escapeHtml(item.status || 'completed')}</small></li>`).join('');
+  const status = progress.state || progress.status || (live ? 'running' : 'completed');
+  return `<details class="workflow-disclosure workflow-canonical" ${live ? 'open' : ''}><summary><span aria-hidden="true">⌄</span><b>Agent activity</b><small>${escapeHtml(status.replaceAll('_', ' '))}</small></summary><ol class="workflow-event-list">${rows}</ol><details class="workflow-advanced"><summary>Advanced trace</summary><ol>${trace}</ol></details></details>`;
+}
+
+function liveWorkflowHtml(progress = {}) { return workflowPanel(progress, true); }
+
 function workflowHtml(meta) {
+  if (meta.workflow?.events?.length) return workflowPanel(meta.workflow, false);
   const workflow = Array.isArray(meta.agentic_log) ? meta.agentic_log.filter(Boolean) : [];
   const observations = Array.isArray(meta.agent_trace?.observations) ? meta.agent_trace.observations : [];
   if (!workflow.length && !observations.length) return '';
   const workflowItems = workflow.map(item => `<li>${escapeHtml(item)}</li>`).join('');
-  const verifiedItems = observations.map(item => {
-    const label = item.tool || 'Tool action';
-    const status = item.ok === false ? 'failed' : 'completed';
-    return `<li><span class="verified-mark" aria-hidden="true">✓</span><span><b>${escapeHtml(label)}</b><small>${escapeHtml(status)}</small></span></li>`;
-  }).join('');
-  return `<details class="workflow-disclosure"><summary><span aria-hidden="true">⌄</span> Workflow</summary>${workflowItems ? `<ol class="workflow-list">${workflowItems}</ol>` : ''}${verifiedItems ? `<section class="verified-actions"><h4>✓ Verified actions</h4><ul>${verifiedItems}</ul></section>` : ''}</details>`;
+  const verifiedItems = observations.map(item => `<li><span class="verified-mark" aria-hidden="true">${item.ok === false ? '×' : '✓'}</span><span><b>${escapeHtml((item.tool || 'Tool action').replaceAll('_', ' '))}</b><small>${item.ok === false ? 'failed' : 'completed'}</small></span></li>`).join('');
+  return `<details class="workflow-disclosure"><summary><span aria-hidden="true">⌄</span> Agent activity</summary>${workflowItems ? `<ol class="workflow-list">${workflowItems}</ol>` : ''}${verifiedItems ? `<section class="verified-actions"><h4>Verified actions</h4><ul>${verifiedItems}</ul></section>` : ''}</details>`;
 }
 
 async function setMessageFeedback(button, rating, meta) {
@@ -140,7 +173,7 @@ export function appendMessage(role, text, meta = {}) {
   if (facts.length) { const info = document.createElement('small'); info.className = 'meta technical-text'; info.textContent = facts.join(' · '); bubble.append(info); }
   if (meta.retry) { const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'retry-message'; retry.textContent = 'Try again'; retry.onclick = meta.retry; bubble.append(retry); }
   content.append(header, bubble); message.append(avatar, content);
-  const liveAttempts = [];
+  const workflowEvents = new Map();
   message.setTypingStatus = label => { const node = message.querySelector('.typing-copy'); if (node) node.textContent = label; };
   message.setWorkflowProgress = progress => {
     if (!message.classList.contains('is-typing')) return;
@@ -148,32 +181,10 @@ export function appendMessage(role, text, meta = {}) {
     $('messages').scrollTop = $('messages').scrollHeight;
   };
   message.setWorkflowEvent = event => {
-    if (!message.classList.contains('is-typing') || !['attempt_start', 'attempt_result'].includes(event?.type)) return;
-    const local = event.source === 'local_model' || event.route === 'LOCAL' || event.provider === 'local';
-    const source = local ? 'Local Intelligence' : (event.provider || 'Cloud provider');
-    const model = !local && event.model && event.model !== 'auto' ? ` / ${event.model}` : '';
-    const key = [event.source || event.route, event.provider, event.model].join(':');
-    let attempt = null;
-    if (event.type === 'attempt_result') {
-      for (let index = liveAttempts.length - 1; index >= 0; index -= 1) {
-        if (liveAttempts[index].key === key && liveAttempts[index].status === 'running') {
-          attempt = liveAttempts[index];
-          break;
-        }
-      }
-    }
-    const status = event.type === 'attempt_start' ? 'running' : (event.status || 'failed');
-    const detail = status === 'running'
-      ? `Trying ${source}${model}`
-      : status === 'success'
-        ? 'Completed'
-        : (event.failure_message || FAILURE_LABELS[event.failure_reason] || 'Model request failed');
-    if (attempt) Object.assign(attempt, {status, detail});
-    else {
-      attempt = {key, stage: source + model, status, detail};
-      liveAttempts.push(attempt);
-    }
-    message.setWorkflowProgress({status: 'running', stages: liveAttempts, current: attempt});
+    if (!message.classList.contains('is-typing') || event?.type !== 'workflow') return;
+    const key = event.sequence || `${event.stage}:${event.event}:${event.status}`;
+    workflowEvents.set(key, event);
+    message.setWorkflowProgress({status:'running', state:event.status === 'failed' ? 'failed' : 'running', events:[...workflowEvents.values()], current:event});
   };
   $('messages').append(message); $('messages').scrollTop = $('messages').scrollHeight;
   return message;

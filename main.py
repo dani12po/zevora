@@ -5,6 +5,7 @@ import os
 import re
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
+from datetime import datetime, timezone
 from threading import Lock
 from time import perf_counter
 import asyncio
@@ -60,6 +61,8 @@ store         = Store(settings.database_file)
 _progress_lock = Lock()
 _progress_events: dict[str, dict] = {}
 _stream_event_callback: ContextVar = ContextVar('stream_event_callback', default=None)
+_workflow_request_id: ContextVar = ContextVar('workflow_request_id', default=None)
+_stream_subscribers: dict[str, set[asyncio.Queue]] = {}
 _chat_runs: dict[str, asyncio.Task] = {}
 router        = ModelRouter()
 local_manager = LocalIntelligenceManager()
@@ -973,7 +976,7 @@ def rename_chat(chat_id:str,body:ChatRenameRequest):
 _CHAT_METADATA_KEYS = (
     'route','reason','provider','model','tools','quality_score','attachments',
     'agent_trace','agentic_log','fallback_trace','estimated_cost','context_hash','project_files',
-    'project_discovery','context_status','flow','execution_ms',
+    'project_discovery','context_status','flow','execution_ms','workflow',
 )
 
 def _chat_metadata(result):
@@ -981,11 +984,14 @@ def _chat_metadata(result):
 
 async def _complete_chat_turn(chat, content, body):
     project=workspace_manager.get(chat['project_id']) if chat['project_id'] else None
-    return await task(TaskRequest(
+    result = await task(TaskRequest(
         prompt=content, project=project['path'] if project else None,
         mode=body.mode, provider=body.provider, model=body.model,
         attachments=body.attachments, actions=body.actions, progress_id=body.progress_id,
     ))
+    if body.progress_id:
+        result['workflow'] = _progress_snapshot(body.progress_id)
+    return result
 
 @app.post('/api/chats/{chat_id}/messages')
 async def chat_message(chat_id:str,body:ChatMessageRequest):
@@ -1021,18 +1027,60 @@ def message_feedback(chat_id: str, message_id: int, body: ChatFeedbackRequest):
         raise HTTPException(422, str(error)) from error
     return {'ok': True, 'chat_id': chat_id, 'message_id': message_id, 'rating': rating}
 @app.get('/api/chat/progress/{request_id}')
-def chat_progress(request_id: str):
+def chat_progress(request_id: str, after: int = Query(default=0, ge=0)):
+    # FastAPI injects an integer for HTTP calls; direct callers see the Query
+    # marker when omitting the optional argument.
+    if not isinstance(after, int):
+        after = 0
     with _progress_lock:
         progress = _progress_events.get(request_id)
-    if progress is None:
+        snapshot = dict(progress) if progress else None
+        if snapshot is not None:
+            snapshot['events'] = [
+                dict(item) for item in progress.get('events', [])
+                if item.get('sequence', 0) > after
+            ]
+            snapshot['stages'] = [dict(item) for item in progress.get('stages', [])]
+            if progress.get('current'):
+                snapshot['current'] = dict(progress['current'])
+    if snapshot is None:
         raise HTTPException(404, 'Chat progress not found')
-    return progress
+    return snapshot
 
 
 async def _emit_stream_event(event: dict) -> None:
-    callback = _stream_event_callback.get()
-    if callback is not None:
-        await callback(event)
+    request_id = _workflow_request_id.get()
+    if not request_id:
+        return
+    event_type = event.get('type', 'workflow')
+    if event_type == 'attempt_start':
+        _workflow_record(
+            request_id, stage='PROVIDER_ROUTING', event='provider_selected', status='running',
+            title='Provider selected',
+            message=f"Trying {event.get('provider') or 'configured provider'}"
+                    + (f" / {event['model']}" if event.get('model') else ''),
+            data=event,
+        )
+    elif event_type == 'attempt_result':
+        succeeded = event.get('status') == 'success'
+        _workflow_record(
+            request_id, stage='PROVIDER_ROUTING',
+            event='provider_selected' if succeeded else 'provider_fallback',
+            status='completed' if succeeded else 'failed',
+            title='Provider response ready' if succeeded else 'Provider attempt failed',
+            message=(
+                f"Using {event.get('provider') or 'configured provider'}"
+                if succeeded else event.get('failure_message') or 'Trying the next available provider'
+            ),
+            data=event,
+        )
+    else:
+        _workflow_record(
+            request_id,
+            stage=event.get('stage', 'EXECUTION'), event=event.get('event', event_type),
+            status=event.get('status', 'completed'), title=event.get('title', 'Agent activity'),
+            message=event.get('message', ''), data=event.get('data'),
+        )
 
 
 def _sse_frame(event: dict) -> str:
@@ -1041,7 +1089,9 @@ def _sse_frame(event: dict) -> str:
 
 async def _execute_chat_request(body: ChatRequest, request_id: str) -> dict:
     _progress_start(request_id)
-    _progress_update(request_id, 'UNDERSTAND', 'Memahami permintaan Anda')
+    request_token = _workflow_request_id.set(request_id)
+    _progress_update(request_id, 'RECEIVED', 'Request received')
+    _progress_update(request_id, 'UNDERSTANDING', 'Understanding the request', 'running')
     chat_id = body.conversation_id
     if not chat_id:
         chat_id = workspace_manager.create_chat(body.message[:80], body.project_id)['id']
@@ -1066,11 +1116,26 @@ async def _execute_chat_request(body: ChatRequest, request_id: str) -> dict:
                 progress_id=request_id,
             ),
         )
+        _progress_update(request_id, 'COMPLETED', 'Workflow completed')
         _progress_finish(request_id)
+        workflow = _progress_snapshot(request_id)
+        result['workflow'] = workflow
+        workspace_manager.update_assistant_message(
+            chat_id, result['message_id'], result['response'], _chat_metadata(result),
+        )
         return {'ok': True, **result, 'conversation_id': chat_id, 'request_id': request_id}
-    except Exception:
+    except asyncio.CancelledError:
+        snapshot = _progress_snapshot(request_id) or {}
+        if snapshot.get('status') != 'cancelled':
+            _progress_update(request_id, 'CANCELLED', 'Request cancelled', 'cancelled')
+            _progress_finish(request_id, 'cancelled')
+        raise
+    except Exception as error:
+        _progress_update(request_id, 'FAILED', f'Request failed: {type(error).__name__}', 'failed')
         _progress_finish(request_id, 'failed')
         raise
+    finally:
+        _workflow_request_id.reset(request_token)
 
 
 async def _chat_request(body: ChatRequest) -> dict:
@@ -1102,42 +1167,58 @@ async def _stream_error(error: Exception) -> dict:
 
 @app.post('/api/chat/stream')
 async def chat_stream(body: ChatRequest, request: Request):
+    request_id = body.request_id or 'zv-' + uuid.uuid4().hex[:12]
+    body.request_id = request_id
     queue: asyncio.Queue = asyncio.Queue()
-
-    async def publish(event: dict) -> None:
-        await queue.put({'type': event.get('type', 'workflow'), **event})
+    with _progress_lock:
+        _stream_subscribers.setdefault(request_id, set()).add(queue)
+        snapshot = _progress_events.get(request_id)
+        replay = [dict(item) for item in (snapshot or {}).get('events', [])]
 
     async def run() -> None:
-        token = _stream_event_callback.set(publish)
         try:
             result = await _chat_request(body)
             await queue.put({'type': 'final', 'data': result})
         except asyncio.CancelledError:
-            raise
+            await queue.put({
+                'type': 'error',
+                'error': {'code': 'REQUEST_CANCELLED', 'message': 'Request cancelled.'},
+            })
         except Exception as error:
             await queue.put({'type': 'error', 'error': await _stream_error(error)})
-        finally:
-            _stream_event_callback.reset(token)
 
     async def events():
-        worker = asyncio.create_task(run())
+        for item in replay:
+            await queue.put({'type': 'workflow', **item})
+        subscriber = asyncio.create_task(run())
         try:
             while True:
                 if await request.is_disconnected():
-                    worker.cancel()
                     break
                 try:
-                    event = await asyncio.wait_for(queue.get(), timeout=15)
+                    event = await asyncio.wait_for(queue.get(), timeout=10)
                 except asyncio.TimeoutError:
-                    yield ': keepalive\n\n'
+                    snapshot = _progress_snapshot(request_id)
+                    yield _sse_frame({
+                        'type': 'heartbeat', 'request_id': request_id,
+                        'sequence': snapshot.get('sequence', 0) if snapshot else 0,
+                        'timestamp': _utc_timestamp(),
+                    })
                     continue
                 yield _sse_frame(event)
                 if event.get('type') in {'final', 'error'}:
                     break
         finally:
-            if not worker.done():
-                worker.cancel()
-            await asyncio.gather(worker, return_exceptions=True)
+            with _progress_lock:
+                subscribers = _stream_subscribers.get(request_id)
+                if subscribers is not None:
+                    subscribers.discard(queue)
+                    if not subscribers:
+                        _stream_subscribers.pop(request_id, None)
+            # Cancel only this subscriber; _chat_request is shared and shielded.
+            if not subscriber.done():
+                subscriber.cancel()
+            await asyncio.gather(subscriber, return_exceptions=True)
 
     return StreamingResponse(
         events(), media_type='text/event-stream',
@@ -1145,24 +1226,125 @@ async def chat_stream(body: ChatRequest, request: Request):
     )
 
 
+@app.post('/api/chat/cancel/{request_id}')
+async def cancel_chat_request(request_id: str):
+    run = _chat_runs.get(request_id)
+    if run is None:
+        raise HTTPException(404, 'Chat request not found')
+    snapshot = _progress_snapshot(request_id) or {}
+    if not run.done() and snapshot.get('status') not in {'completed', 'failed', 'cancelled'}:
+        _progress_update(request_id, 'CANCELLED', 'Cancellation requested', 'cancelled')
+        _progress_finish(request_id, 'cancelled')
+        run.cancel()
+        await asyncio.gather(run, return_exceptions=True)
+    elif not run.done():
+        run.cancel()
+        await asyncio.gather(run, return_exceptions=True)
+    snapshot = _progress_snapshot(request_id) or {}
+    return {
+        'ok': True,
+        'request_id': request_id,
+        'status': snapshot.get('status', 'cancelled'),
+    }
+
+
+def _utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
+def _progress_snapshot(request_id: str | None) -> dict | None:
+    if not request_id:
+        return None
+    with _progress_lock:
+        current = _progress_events.get(request_id)
+        if current is None:
+            return None
+        snapshot = dict(current)
+        snapshot['events'] = [dict(item) for item in current.get('events', [])]
+        snapshot['stages'] = [dict(item) for item in current.get('stages', [])]
+        if current.get('current'):
+            snapshot['current'] = dict(current['current'])
+        return snapshot
+
+
 def _progress_start(request_id: str) -> None:
     with _progress_lock:
         _progress_events[request_id] = {
-            'request_id': request_id, 'status': 'running', 'stages': [],
+            'request_id': request_id, 'status': 'queued', 'state': 'queued',
+            'sequence': 0, 'events': [], 'stages': [],
         }
         while len(_progress_events) > 128:
             _progress_events.pop(next(iter(_progress_events)))
 
 
-def _progress_update(request_id: str | None, stage: str, detail: str = '', status: str = 'completed') -> None:
+def _workflow_record(
+    request_id: str | None, *, stage: str, event: str, status: str,
+    title: str, message: str = '', data: dict | None = None,
+) -> dict | None:
     if not request_id:
-        return
+        return None
+    safe_stage = str(stage or 'EXECUTION').upper()[:48]
+    safe_status = str(status or 'completed').lower()[:24]
+    safe_message = redact(str(message or ''))[:500]
+    state_by_stage = {
+        'RECEIVED': 'queued', 'UNDERSTAND': 'running', 'UNDERSTANDING': 'running',
+        'ATTACHMENTS': 'running', 'INSPECT': 'running', 'WORKSPACE_DISCOVERY': 'running',
+        'RETRIEVE': 'running', 'CONTEXT_RETRIEVAL': 'running', 'REASON': 'running',
+        'ANALYSIS': 'running', 'PLAN': 'running', 'PLANNING': 'running',
+        'APPROVAL': 'waiting_approval', 'ACT': 'executing', 'EXECUTION': 'executing',
+        'VERIFY': 'verifying', 'VERIFICATION': 'verifying', 'FIX': 'repairing',
+        'DEBUGGING': 'repairing', 'FINAL_RESPONSE': 'finalizing', 'FINALIZATION': 'finalizing',
+        'COMPLETED': 'completed', 'FAILED': 'failed', 'CANCELLED': 'cancelled',
+    }
     with _progress_lock:
         current = _progress_events.get(request_id)
         if current is None:
-            return
-        current['stages'].append({'stage': stage, 'detail': redact(detail)[:240], 'status': status})
-        current['current'] = current['stages'][-1]
+            return None
+        current['sequence'] += 1
+        item = {
+            'type': 'workflow', 'request_id': request_id,
+            'sequence': current['sequence'], 'timestamp': _utc_timestamp(),
+            'stage': safe_stage, 'event': str(event or 'stage_completed')[:64],
+            'status': safe_status, 'title': redact(str(title or safe_stage))[:120],
+            'message': safe_message,
+        }
+        if data:
+            item['data'] = data
+        current['events'].append(item)
+        current['current'] = item
+        current['state'] = state_by_stage.get(safe_stage, current.get('state', 'running'))
+        current['status'] = current['state'] if current['state'] in {'completed', 'failed', 'cancelled'} else 'running'
+        subscribers = list(_stream_subscribers.get(request_id, ()))
+    for queue in subscribers:
+        queue.put_nowait({'type': 'workflow', **item})
+    callback = _stream_event_callback.get()
+    if callback is not None:
+        result = callback(dict(item))
+        if asyncio.iscoroutine(result):
+            asyncio.create_task(result)
+    return item
+
+
+def _progress_update(request_id: str | None, stage: str, detail: str = '', status: str = 'completed') -> None:
+    event_status = str(status or 'completed').lower()
+    event_name = (
+        'stage_started' if event_status == 'running' else
+        'stage_failed' if event_status in {'failed', 'cancelled'} else 'stage_completed'
+    )
+    title = str(stage or 'Workflow').replace('_', ' ').title()
+    item = _workflow_record(
+        request_id, stage=stage, event=event_name, status=event_status,
+        title=title, message=detail,
+    )
+    if item is None:
+        return
+    with _progress_lock:
+        current = _progress_events.get(request_id)
+        if current is not None:
+            current['stages'].append({
+                'stage': item['stage'], 'detail': item['message'], 'status': item['status'],
+                'sequence': item['sequence'],
+            })
 
 
 def _progress_finish(request_id: str | None, status: str = 'completed') -> None:
@@ -1172,6 +1354,7 @@ def _progress_finish(request_id: str | None, status: str = 'completed') -> None:
         current = _progress_events.get(request_id)
         if current:
             current['status'] = status
+            current['state'] = status
 
 
 @app.post('/api/chat')
@@ -1663,6 +1846,15 @@ async def task(body: TaskRequest):
                 [AgentAction(**action.model_dump()) for action in body.actions],
                 project_files_used,
                 progress_callback=progress,
+                event_callback=lambda event: _workflow_record(
+                    progress_id,
+                    stage=event.get('stage', 'EXECUTION'),
+                    event=event.get('event', 'tool_completed'),
+                    status=event.get('status', 'completed'),
+                    title=event.get('title', 'Agent activity'),
+                    message=event.get('message', ''),
+                    data=event.get('data'),
+                ),
             )
             if agent_trace.pending_approvals:
                 raise HTTPException(403, {
@@ -1728,6 +1920,7 @@ async def task(body: TaskRequest):
                     'attachments': attachment_metadata,
                     'agent_trace': agent_trace.to_dict(),
                     'agentic_log': None,
+                    'workflow': _progress_snapshot(progress_id),
                 }
 
     context_hash = Store.key(project_hash, attachment_hash) if attachment_hash else project_hash
@@ -1757,6 +1950,7 @@ async def task(body: TaskRequest):
             'attachments': attachment_metadata,
             'fallback_trace': [{'source': 'local', 'status': 'success', 'kind': 'exact_cache'}],
             'agentic_log': None,
+            'workflow': _progress_snapshot(progress_id),
         }
 
     routing_prompt = f'{prompt}\n[image attachment]' if images else prompt
@@ -1955,6 +2149,7 @@ async def task(body: TaskRequest):
         'attachments': attachment_metadata, 'fallback_trace': fallback_trace,
         'agent_trace': agent_trace.to_dict() if agent_trace else None,
         'agentic_log': agentic_log,
+        'workflow': _progress_snapshot(progress_id),
     }
 
 def _flow_status(*, workspace: str, discovery: str, context: str, route: str,

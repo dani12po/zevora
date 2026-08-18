@@ -45,6 +45,38 @@ Adaptive Hybrid Router  ← capability · cost · history · task complexity
 MCP Tools (optional)  ← Filesystem · Git · Terminal (approval-gated)
 ```
 
+## Live Workflow And Agent Activity
+
+Chat requests use one request-scoped workflow journal. The journal is shared by the
+SSE stream at `/api/chat/stream` and incremental polling at
+`/api/chat/progress/{request_id}?after=<sequence>`, so reconnects do not start a
+second model or tool execution. Every event has a monotonic `sequence`, UTC
+`timestamp`, `request_id`, `stage`, `event`, `status`, bounded `title`, and
+redacted `message`. The UI groups the journal into Agent activity and keeps the
+ordinary assistant answer as a separate final response.
+
+Public lifecycle events include `stage_started`, `stage_completed`,
+`stage_failed`, `analysis_*`, `planning_*`, `tool_*`, `file_*`, `command_*`,
+`verification_*`, `debug_*`, `provider_selected`, `provider_fallback`,
+`memory_retrieved`, `cache_hit`, `cache_miss`, `final_preparing`, `final_ready`,
+and terminal workflow events. Event payloads contain bounded operational metadata
+such as tool names, paths, byte counts, line counts, provider identifiers, and
+verification counts. They never contain private chain-of-thought, full source
+contents, credentials, or unredacted secret-like strings.
+
+The stream sends structured `heartbeat` frames during idle periods. A disconnected
+subscriber is cancelled without cancelling the shared request task; the browser
+can recover through polling or reconnect to the same request ID. The Stop control
+calls `POST /api/chat/cancel/{request_id}` and the request records a terminal
+`cancelled` state. If realtime transport is unavailable before execution begins,
+the client falls back to `/api/chat` using the same request ID, preserving task
+reuse and preventing duplicate execution.
+
+Workflow snapshots are persisted in assistant message metadata under `workflow`,
+alongside the grounded response, provider attribution, file receipts, and
+verification results. This makes historical Agent activity readable without
+turning telemetry into a transcript of hidden reasoning.
+
 ## Gateway Controller
 
 ```

@@ -27,6 +27,31 @@ Final response → knowledge extraction + compression + deduplication
 Cache + memory + usage + routing experience
 ```
 
+## Live Workflow Contract
+
+Chat workflow telemetry is request-scoped and canonical. The journal is shared by
+SSE and incremental polling, so reconnecting with the same request ID never starts
+a second execution. Events carry a monotonic sequence, UTC timestamp, request ID,
+stage, normalized event type, status, bounded title, redacted message, and bounded
+operational data.
+
+The public event vocabulary covers lifecycle stages, analysis and planning,
+tool/file/command activity, verification, debugging and repair, provider routing,
+memory/cache/context signals, final preparation, and terminal workflow outcomes.
+Telemetry is evidence of progress, not model reasoning: private chain-of-thought,
+full source contents, credentials, and secret-like values are excluded or redacted.
+
+`GET /api/chat/progress/{request_id}?after=<sequence>` returns only events after the
+requested sequence while retaining the complete bounded snapshot. `/api/chat/stream`
+sends the same workflow events as SSE plus structured heartbeats during idle periods.
+A disconnected SSE subscriber can be cancelled without cancelling the shared task;
+polling and a later SSE connection continue from the journal. Cancellation uses
+`POST /api/chat/cancel/{request_id}` and records a terminal `cancelled` state.
+
+The final assistant response is separate from Agent activity. Persisted assistant
+metadata includes the final workflow snapshot, provider attribution, grounded file
+receipts, and verification results for historical inspection.
+
 ## Agent Flow Contract
 
 `POST /api/task` preserves the existing response fields and adds `project_discovery`,
