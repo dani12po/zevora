@@ -15,6 +15,7 @@ from typing import Any
 FILESYSTEM_READ = {'list_directory', 'read_file', 'search_files', 'file_exists', 'get_file_info'}
 FILESYSTEM_MUTATION = {'create_file', 'write_file', 'edit_file', 'move_file', 'copy_file'}
 DESTRUCTIVE_TOOLS = {'delete_file', 'delete_directory'}
+WORKSPACE_MUTATION = FILESYSTEM_MUTATION | DESTRUCTIVE_TOOLS
 VALID_MODES = {'ask', 'deny', 'session', 'always'}
 
 
@@ -77,7 +78,7 @@ class WorkspacePermissionPolicy:
                 grants.difference_update({key for key in grants if (kind is None or key[0] == kind) and (value is None or key[1] == str(value).lower())})
 
     def check(self, tool: str, args: dict[str, Any], approved: bool = False) -> PermissionDecision:
-        if tool in FILESYSTEM_READ | FILESYSTEM_MUTATION | DESTRUCTIVE_TOOLS:
+        if tool in FILESYSTEM_READ | WORKSPACE_MUTATION:
             paths = [args.get('path', '')]
             if tool in {'move_file', 'copy_file'}:
                 paths = [args.get('source', ''), args.get('destination', '')]
@@ -85,14 +86,13 @@ class WorkspacePermissionPolicy:
             if outside:
                 return PermissionDecision(
                     False, False, 'external_filesystem',
-                    {'paths': outside}, 'Paths outside the selected workspace are blocked',
+                    {'paths': outside},
+                    'Paths outside the selected workspace are blocked; select that workspace first',
                 )
-            if tool in FILESYSTEM_MUTATION | DESTRUCTIVE_TOOLS and not approved:
-                return PermissionDecision(
-                    False, True, 'filesystem_mutation',
-                    {'tool': tool, 'paths': paths},
-                    'Filesystem changes require explicit confirmation',
-                )
+            # Selecting a workspace is the user's authorization for file operations
+            # confined to that root. Canonical path checks above remain mandatory.
+            if tool in WORKSPACE_MUTATION:
+                return PermissionDecision(True, permission_type='workspace_filesystem')
 
         if tool in {'execute_command', 'terminal'}:
             return self._check_scoped_permission(

@@ -1,4 +1,4 @@
-import {$, api, badge, emptyState, escapeHtml, exposeHandlers, pageWrap, setPanel, userErrorMessage} from './core.js';
+import {$, api, badge, emptyState, escapeHtml, exposeHandlers, pageWrap, setPanel, userErrorMessage} from './core.js?v=20260818-7';
 
 const LABELS = {local:'Zevora Local AI',openai:'OpenAI',xai:'xAI (Grok)',nvidia:'NVIDIA NIM',deepseek:'DeepSeek',gemini:'Google Gemini',anthropic:'Anthropic'};
 const DESCRIPTIONS = {
@@ -25,11 +25,12 @@ function providerCard(provider, statusMap, modelCounts) {
       </div><div class="provider-path technical-text">${escapeHtml(runtime.model_path || '')}</div>
     </div></div>`;
   }
-  const healthBadge = health === 'healthy' ? badge('healthy','green') : !provider.key_set ? badge('not configured','grey') : health === 'unavailable' ? badge('unavailable','red') : badge('not configured','grey');
+  const modelCount = modelCounts[provider.provider] || 0;
+  const healthBadge = health === 'healthy' && modelCount > 0 ? badge('healthy','green') : !provider.key_set ? badge('not configured','grey') : health === 'healthy' ? badge('no models','yellow') : health === 'unavailable' ? badge('unavailable','red') : badge('not configured','grey');
   const id = escapeHtml(provider.provider);
   return `<div class="card provider-shell"><div class="provider-card">
     <div class="provider-card-name">${escapeHtml(LABELS[provider.provider] || provider.provider)} ${healthBadge}</div>
-    <div class="provider-summary"><span>${modelCounts[provider.provider] || 0} models</span><label class="toggle" title="Enabled"><input type="checkbox" id="toggle-${id}" ${provider.enabled ? 'checked' : ''} onchange="markProviderDirty('${id}')"><span class="toggle-slider"></span></label></div>
+    <div class="provider-summary"><span>${modelCount} models</span><label class="toggle" title="Enabled"><input type="checkbox" id="toggle-${id}" ${provider.enabled ? 'checked' : ''} onchange="markProviderDirty('${id}')"><span class="toggle-slider"></span></label></div>
     <div class="provider-description">${escapeHtml(DESCRIPTIONS[provider.provider] || 'Custom OpenAI-compatible provider')}</div>
     <div class="provider-fields"><div class="provider-field"><label>API Key</label><span class="key-display" id="key-display-${id}">${provider.key_set ? `********${provider.key_masked.slice(-4)}` : 'Not set'}</span><button class="btn-sm" onclick="toggleKeyEdit('${id}')">Edit</button></div>
       <div class="provider-field" id="key-edit-${id}" style="display:none"><label>New key</label><input type="password" id="key-input-${id}" placeholder="sk-..." autocomplete="new-password"><button class="btn-sm" onclick="cancelKeyEdit('${id}')">Cancel</button></div>
@@ -37,7 +38,7 @@ function providerCard(provider, statusMap, modelCounts) {
       <div class="provider-field"><label>Default Model</label><input id="model-${id}" value="${escapeHtml(provider.default_model || '')}" oninput="markProviderDirty('${id}')"><span></span></div>
       <div class="provider-field"><label>Image input</label><label class="toggle"><input type="checkbox" id="vision-${id}" ${provider.supports_vision ? 'checked' : ''} onchange="markProviderDirty('${id}')"><span class="toggle-slider"></span></label><span></span></div>
       <div class="provider-field"><label>Priority</label><input type="number" id="prio-${id}" value="${provider.routing_priority}" min="0" max="999" oninput="markProviderDirty('${id}')"><span></span></div>
-    </div><div class="provider-save"><span class="save-msg" id="save-msg-${id}">Saved</span><button class="btn-sm" id="save-btn-${id}" onclick="saveProvider('${id}')" disabled>Save</button></div>
+    </div><div class="provider-save"><span class="save-msg" id="save-msg-${id}"></span><button class="btn-sm" onclick="testProvider('${id}', this)">Test connection</button><button class="btn-sm" id="save-btn-${id}" onclick="saveProvider('${id}')" disabled>Save</button></div>
   </div></div>`;
 }
 
@@ -101,6 +102,36 @@ export async function exportCustomProvider(id) { await providerAction(async()=>{
 export function markProviderDirty(id) { const button=$(`save-btn-${id}`); if(button) button.disabled=false; }
 export function toggleKeyEdit(id) { $(`key-edit-${id}`).style.display='grid'; $(`key-display-${id}`).closest('.provider-field').style.display='none'; markProviderDirty(id); }
 export function cancelKeyEdit(id) { $(`key-edit-${id}`).style.display='none'; $(`key-display-${id}`).closest('.provider-field').style.display='grid'; }
-export async function saveProvider(id) { const button=$(`save-btn-${id}`), key=$(`key-input-${id}`), priority=Number.parseInt($(`prio-${id}`)?.value,10); button.classList.add('btn-loading'); try { await api('/api/providers/config',{method:'POST',body:JSON.stringify({provider:id,base_url:$(`url-${id}`)?.value||null,default_model:$(`model-${id}`)?.value?.trim()||null,routing_priority:Number.isNaN(priority)?null:priority,enabled:$(`toggle-${id}`)?.checked??null,supports_vision:$(`vision-${id}`)?.checked??null,api_key:key?.value?.trim()||null})}); const message=$(`save-msg-${id}`); message.textContent='Saved';message.classList.remove('error-text');message.classList.add('show'); setTimeout(()=>message.classList.remove('show'),2500); button.disabled=true; if(key){key.value='';cancelKeyEdit(id);} } catch(error){const message=$(`save-msg-${id}`);message.textContent=userErrorMessage(error);message.classList.add('show','error-text');} finally{button.classList.remove('btn-loading');} }
+function showProviderSave(id, text, tone = 'success') {
+  const message = $(`save-msg-${id}`);
+  if (!message) return;
+  message.textContent = text;
+  message.classList.toggle('error-text', tone === 'error');
+  message.classList.toggle('warning-text', tone === 'warning');
+  message.classList.add('show');
+}
 
-exposeHandlers({analyzeProviderSource,saveCustomProvider,importProviderJson,testCustomProvider,trustCustomProvider,removeCustomProvider,exportCustomProvider,markProviderDirty,toggleKeyEdit,cancelKeyEdit,saveProvider});
+function verificationMessage(result, action = 'save') {
+  const saved = action === 'save';
+  if (result.status === 'healthy' && result.models_discovered > 0) {
+    return {text: `${saved ? 'Saved' : 'Test passed'} - ${result.models_discovered} models discovered`, tone: 'success'};
+  }
+  if (result.status === 'unavailable') {
+    const detail = result.failure_reason ? ` (${result.failure_reason})` : '';
+    const prefix = saved ? 'Key saved, but the provider could not be verified' : 'Connection test failed';
+    return {text: `${prefix}${detail}. ${result.failure_message || 'Check the key and try again.'}`, tone: 'error'};
+  }
+  if (result.status === 'unconfigured') {
+    return {text: saved ? 'Key was not saved or the provider is not configured.' : 'Connection test could not run because the provider is not configured.', tone: 'warning'};
+  }
+  if (result.status === 'healthy' && result.models_discovered === 0) {
+    return {text: `Provider is healthy, but no usable models were discovered${result.failure_reason ? ` (${result.failure_reason})` : ''}.`, tone: 'warning'};
+  }
+  return {text: result.failure_message || `Provider status: ${result.status}`, tone: 'warning'};
+}
+
+export async function saveProvider(id) { const button=$(`save-btn-${id}`), key=$(`key-input-${id}`), priority=Number.parseInt($(`prio-${id}`)?.value,10); button.classList.add('btn-loading'); try { const result=await api('/api/providers/config',{method:'POST',body:JSON.stringify({provider:id,base_url:$(`url-${id}`)?.value||null,default_model:$(`model-${id}`)?.value?.trim()||null,routing_priority:Number.isNaN(priority)?null:priority,enabled:$(`toggle-${id}`)?.checked??null,supports_vision:$(`vision-${id}`)?.checked??null,api_key:key?.value?.trim()||null})}); await renderProviders(); const message=verificationMessage(result); showProviderSave(id,message.text,message.tone); button.disabled=true; if(key){key.value='';cancelKeyEdit(id);} } catch(error){showProviderSave(id,userErrorMessage(error),'error');} finally{button.classList.remove('btn-loading');} }
+
+export async function testProvider(id, button = null) { if (button) button.classList.add('btn-loading'); try { const result = await api(`/api/providers/${id}/test`, {method:'POST'}); await renderProviders(); const message = verificationMessage(result, 'test'); showProviderSave(id, message.text, message.tone); } catch (error) { showProviderSave(id, userErrorMessage(error), 'error'); } finally { if (button) button.classList.remove('btn-loading'); } }
+
+exposeHandlers({analyzeProviderSource,saveCustomProvider,importProviderJson,testCustomProvider,testProvider,trustCustomProvider,removeCustomProvider,exportCustomProvider,markProviderDirty,toggleKeyEdit,cancelKeyEdit,saveProvider});

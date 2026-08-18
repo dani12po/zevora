@@ -1,6 +1,7 @@
 import asyncio
 
 import httpx
+import main
 import pytest
 
 from agent.config import settings
@@ -149,6 +150,98 @@ def test_native_capability_metadata_respects_vision_policy(monkeypatch):
     assert 'vision' in anthropic['capabilities']
 
 
+def test_refresh_failed_health_check_returns_diagnostic_and_zero_models(tmp_path, monkeypatch):
+    class FailingProvider:
+        def configured(self):
+            return True
+
+        async def health_check(self):
+            raise ProviderAuthenticationError('secret')
+
+        async def list_models(self):
+            raise AssertionError('list_models must not run after failed health check')
+
+    registry = ModelRegistry(tmp_path / 'models.db')
+    monkeypatch.setattr(
+        'agent.providers.discovery.configured_providers',
+        lambda: [{'provider': 'openai', 'configured': True, 'enabled': True}],
+    )
+    monkeypatch.setattr(
+        'agent.providers.discovery.get_provider', lambda _name: FailingProvider()
+    )
+
+    result = asyncio.run(ProviderDiscovery(registry).refresh('openai'))
+
+    assert result[0]['health_status'] == 'unavailable'
+    assert result[0]['models_discovered'] == 0
+    assert result[0]['failure_reason'] == 'AUTH_ERROR'
+    assert 'API key' in result[0]['failure_message']
+    assert registry.list('openai') == []
+
+
+def test_refresh_success_populates_registry_and_cloud_candidates(tmp_path, monkeypatch):
+    class HealthyProvider:
+        def configured(self):
+            return True
+
+        async def health_check(self):
+            return True
+
+        async def list_models(self):
+            return [{'model_id': 'verified-model', 'capabilities': ['general']}]
+
+    registry = ModelRegistry(tmp_path / 'models.db')
+    monkeypatch.setattr(
+        'agent.providers.discovery.configured_providers',
+        lambda: [{'provider': 'openai', 'configured': True, 'enabled': True}],
+    )
+    monkeypatch.setattr(
+        'agent.providers.discovery.get_provider', lambda _name: HealthyProvider()
+    )
+    monkeypatch.setattr(main.settings, 'routing_mode', 'CLOUD_ONLY')
+    monkeypatch.setattr(
+        'agent.routing.hybrid_router.provider_policy',
+        lambda _name: {'enabled': True, 'default_model': 'verified-model', 'routing_priority': 50},
+    )
+
+    result = asyncio.run(ProviderDiscovery(registry).refresh('openai'))
+    models = registry.list('openai')
+    candidates = main._cloud_candidates('hello', models)
+
+    assert result[0]['health_status'] == 'healthy'
+    assert result[0]['models_discovered'] == 1
+    assert models[0]['model_id'] == 'verified-model'
+    assert any(candidate.provider == 'openai' for candidate in candidates)
+
+
+def test_refresh_healthy_provider_with_no_models_is_not_ready(tmp_path, monkeypatch):
+    class EmptyProvider:
+        def configured(self):
+            return True
+
+        async def health_check(self):
+            return True
+
+        async def list_models(self):
+            return []
+
+    registry = ModelRegistry(tmp_path / 'models.db')
+    monkeypatch.setattr(
+        'agent.providers.discovery.configured_providers',
+        lambda: [{'provider': 'openai', 'configured': True, 'enabled': True}],
+    )
+    monkeypatch.setattr(
+        'agent.providers.discovery.get_provider', lambda _name: EmptyProvider()
+    )
+
+    result = asyncio.run(ProviderDiscovery(registry).refresh('openai'))
+
+    assert result[0]['health_status'] == 'healthy'
+    assert result[0]['models_discovered'] == 0
+    assert result[0]['failure_reason'] == 'NO_MODELS'
+    assert registry.list('openai') == []
+
+
 def test_disabled_provider_refresh_invalidates_cached_healthy_models(tmp_path, monkeypatch):
     registry = ModelRegistry(tmp_path / 'models.db')
     registry.upsert({
@@ -164,6 +257,8 @@ def test_disabled_provider_refresh_invalidates_cached_healthy_models(tmp_path, m
 
     assert result == [{
         'provider': 'nvidia', 'health_status': 'disabled', 'models_discovered': 0,
+        'failure_reason': 'PROVIDER_DISABLED',
+        'failure_message': 'The provider is disabled.',
     }]
     cached = registry.list('nvidia')[0]
     assert cached['health_status'] == 'disabled'

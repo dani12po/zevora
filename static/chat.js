@@ -1,5 +1,5 @@
-import {$, api, emptyState, escapeHtml, fmtBytes, navigate, setMessages, state, stateIndicator, userErrorMessage} from './core.js';
-import {appendMessage, newChat, refreshSidebarChats} from './chats.js';
+import {$, api, emptyState, escapeHtml, fmtBytes, navigate, setMessages, state, stateIndicator, userErrorMessage} from './core.js?v=20260818-7';
+import {appendMessage, configureMessageActions, newChat, refreshSidebarChats} from './chats.js?v=20260818-7';
 
 const LIMITS = {image:8_000_000,pdf:12_000_000,text:2_000_000};
 let projectSelectionGeneration = 0;
@@ -10,17 +10,43 @@ function isCurrentProjectSelection(generation) { return generation === projectSe
 export function syncWorkspaceAccess() {
   const selected = $('project-select')?.selectedOptions?.[0], ready = Boolean(selected?.value), name = selected?.textContent || '';
   const access = $('workspace-access');
-  if (access) { access.className = `workspace-access ${ready ? 'is-project' : 'is-chat'}`; access.querySelector('b').textContent = ready ? 'File access enabled' : 'Chat only'; access.querySelector('span').textContent = ready ? `The agent may work inside ${name}. File changes still require approval.` : 'Select a project folder before asking the agent to read or change files.'; access.querySelector('button').classList.toggle('hidden', ready); }
+  if (access) { access.className = `workspace-access ${ready ? 'is-project' : 'is-chat'}`; access.querySelector('b').textContent = ready ? 'File access enabled' : 'Chat only'; access.querySelector('span').textContent = ready ? `The agent may read and change files inside ${name}. Another folder must be selected before it can be accessed.` : 'Select a project folder before asking the agent to read or change files.'; access.querySelector('button').classList.toggle('hidden', ready); }
   if ($('project-label') && location.pathname === '/') $('project-label').textContent = ready ? `Project connected - ${name}` : 'Chat only - select a folder to let the agent work with files';
 }
 
 function syncComposerState() { const button = $('composer')?.querySelector('button[type=submit]'); if (button) button.disabled = state.isSending || !state.gatewayReady; syncWorkspaceAccess(); }
 
-export async function checkGateway() {
-  const element = $('gateway'); element.textContent = 'Checking gateway...'; element.classList.remove('is-online','is-offline'); state.gatewayReady = false; syncComposerState();
-  try { const health = await api('/health'); state.gatewayReady = health.status === 'ok' && health.service === 'zevora'; element.textContent = state.gatewayReady ? 'Gateway connected' : 'Gateway unavailable'; element.classList.toggle('is-online',state.gatewayReady); element.classList.toggle('is-offline',!state.gatewayReady); element.title = `${health.service} ${health.version}`; element.onclick = state.gatewayReady ? null : checkGateway; }
-  catch (_) { element.textContent = 'Gateway offline - click to retry'; element.classList.add('is-offline'); element.title = 'Make sure ZEVORA gateway is running'; element.onclick = checkGateway; }
-  syncComposerState(); return state.gatewayReady;
+let gatewayCheckPromise = null;
+
+export function checkGateway() {
+  if (gatewayCheckPromise) return gatewayCheckPromise;
+  const element = $('gateway');
+  const wasReady = state.gatewayReady;
+  if (!wasReady) {
+    element.textContent = 'Checking gateway...';
+    element.classList.remove('is-online','is-offline');
+    syncComposerState();
+  }
+  gatewayCheckPromise = api('/health').then(health => {
+    state.gatewayReady = health.status === 'ok' && health.service === 'zevora';
+    element.textContent = state.gatewayReady ? 'Gateway connected' : 'Gateway unavailable';
+    element.classList.toggle('is-online', state.gatewayReady);
+    element.classList.toggle('is-offline', !state.gatewayReady);
+    element.title = `${health.service} ${health.version}`;
+    element.onclick = state.gatewayReady ? null : checkGateway;
+    syncComposerState();
+    return state.gatewayReady;
+  }).catch(error => {
+    state.gatewayReady = false;
+    element.textContent = 'Gateway offline - click to retry';
+    element.classList.remove('is-online');
+    element.classList.add('is-offline');
+    element.title = error.message || 'Make sure ZEVORA gateway is running';
+    element.onclick = checkGateway;
+    syncComposerState();
+    return false;
+  }).finally(() => { gatewayCheckPromise = null; });
+  return gatewayCheckPromise;
 }
 
 export async function refreshProjects() { const projects = await api('/api/projects'), select = $('project-select'), current = select.value; select.innerHTML = '<option value="">No folder selected</option>'; projects.forEach(project => select.add(new Option(project.name,project.id))); if ([...select.options].some(option => option.value === current)) select.value = current; syncWorkspaceAccess(); }
@@ -42,6 +68,8 @@ function fallbackStatus(data){if(data.reason==='EXACT_CACHE_HIT')return'Complete
 function resizePrompt(){const prompt=$('prompt');prompt.style.height='auto';prompt.style.height=`${Math.min(prompt.scrollHeight,220)}px`;}
 function failureTitle(error){if(error.code==='AI_EXECUTION_ERROR')return'**AI response unavailable**';if(error.code==='PROJECT_REQUIRED')return'**Project folder required**';if(error.code==='ACTION_FAILED')return'**Action failed**';return'**The request could not be completed**';}
 
+configureMessageActions({regenerate: content => send({content, attachments: [], actions: [], retrying: true})});
+
 export async function send(replay=null){
   const content=replay?.content||$('prompt').value.trim();
   if(!content||state.isSending)return;
@@ -51,19 +79,13 @@ export async function send(replay=null){
   try{
     if(!state.activeChat)await newChat();
     const projectId=$('project-select').value||null;
-    if(!replay&&projectId&&!request.actions.length){
-      $('route-status').textContent='Step 1 of 3 - Planning actions';
-      waiting=appendMessage('assistant','Planning the required actions',{typing:true});
-      const plan=await api('/api/agent/plan',{method:'POST',body:JSON.stringify({prompt:content,project_id:Number(projectId)})});
-      request.actions=(plan.actions||[]).map(action=>({tool:action.tool,arguments:action.arguments,purpose:action.purpose,approved:false}));
-    }
     if(!request.retrying)userMessage=appendMessage('user',content,{attachments:request.attachments});
     $('prompt').value='';resizePrompt();
-    const activity=request.actions.length?'Running approved actions':'Choosing the best available model';
+    const activity=request.actions.length?'Running workspace actions':'Choosing the best available model';
     $('route-status').textContent=request.actions.length?'Step 2 of 3 - Running actions':'Generating response';
     if(waiting)waiting.setTypingStatus(activity);else waiting=appendMessage('assistant',activity,{typing:true});
     const data=await api('/api/chat',{method:'POST',body:JSON.stringify({message:content,conversation_id:state.activeChat,project_id:projectId,mode:$('routing-override')?.value||'auto',provider:$('routing-provider')?.value||null,model:$('routing-model')?.value||null,attachments:request.attachments,actions:request.actions})});
-    state.activeChat=data.conversation_id;waiting.remove();appendMessage('assistant',data.response,data);
+    state.activeChat=data.conversation_id;waiting.remove();appendMessage('assistant',data.response,{...data,regenerate_content:content});
     state.pendingAttachments=[];state.pendingActions=[];state.pendingApprovalRequest=null;renderComposerItems();
     $('route-status').textContent=data.reason==='TOOLS_EXECUTED'?'Completed - changes were written to the selected folder':fallbackStatus(data);
     await refreshSidebarChats();

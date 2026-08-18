@@ -2,6 +2,7 @@ from pathlib import Path
 import hmac
 import json
 import os
+import re
 from contextlib import asynccontextmanager
 from threading import Lock
 from time import perf_counter
@@ -21,11 +22,9 @@ from agent.models.registry import ModelRegistry
 from agent.providers.discovery import ProviderDiscovery
 from agent.providers.errors import (
     ModelNotFoundError,
-    ProviderAuthenticationError,
     ProviderError,
-    ProviderRateLimitError,
-    ProviderTimeoutError,
     ProviderUnavailableError,
+    failure_details,
 )
 from agent.providers.local_provider import local_runtime_status
 from agent.providers.registry import get_provider
@@ -47,7 +46,10 @@ from agent.evolution.engine import EvolutionEngine
 from agent.skills.openclaw import OpenClawSkillSource
 from agent.skills.registry import SkillRegistry
 from agent.storage.cleanup import CleanupManager
-from agent.storage.context_economy import build_context as build_economic_context
+from agent.storage.context_economy import (
+    build_context as build_economic_context,
+    estimate_tokens,
+)
 from agent.storage.maintenance import MaintenanceScheduler
 from agent.storage.storage_manager import StorageManager
 from agent.tools.mcp_gateway import LocalMCPGateway
@@ -68,6 +70,31 @@ mcp_gateway       = LocalMCPGateway()
 hybrid_router     = AdaptiveHybridRouter()
 workspace_manager = WorkspaceManager(ROOT / 'data' / 'database' / 'workspace.db')
 _PROVIDER_CONFIG_LOCK = Lock()
+
+_AGENTIC_LOG_INSTRUCTION = '''
+Before answering, write a short workflow in a <agentic_log>...</agentic_log> block using bullet points,
+then write the final answer normally. Do not claim that you read files, ran commands, or changed code
+inside the agentic log unless this request includes authoritative tool observations proving it; otherwise
+describe analysis and answer composition only. Do not emit any UI toolbar markup.
+'''.strip()
+
+
+def _parse_agentic_response(response: str) -> tuple[str, list[str] | None]:
+    """Extract a closed model workflow block without damaging malformed responses."""
+    match = re.search(
+        r'<agentic_log\s*>(.*?)</agentic_log\s*>',
+        response or '',
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return response, None
+    entries = []
+    for line in match.group(1).splitlines():
+        cleaned = re.sub(r'^\s*(?:[-*•]|\d+[.)])\s*', '', line).strip()
+        if cleaned:
+            entries.append(cleaned)
+    clean_response = (response[:match.start()] + response[match.end():]).strip()
+    return clean_response, entries
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -200,6 +227,8 @@ class ChatRequest(BaseModel):
     attachments: list[AttachmentRequest] = Field(default_factory=list, max_length=8)
     actions: list[AgentActionRequest] = Field(default_factory=list, max_length=30)
 class ChatRenameRequest(BaseModel): title: str = Field(min_length=1, max_length=120)
+class ChatFeedbackRequest(BaseModel):
+    rating: str | None = Field(default=None, pattern='^(up|down)$')
 class ApprovalRequest(BaseModel):
     approved: bool = False
 class ProviderConfigRequest(BaseModel):
@@ -226,10 +255,21 @@ class ProviderEnabledRequest(BaseModel):
 class ProviderExampleRequest(BaseModel):
     language: str = Field(default='python', max_length=32)
 
+def _dashboard_response():
+    from fastapi.responses import FileResponse
+    return FileResponse(
+        ROOT / 'static' / 'index.html',
+        headers={
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+            'Expires': '0',
+        },
+    )
+
+
 @app.get('/')
 def dashboard():
-    from fastapi.responses import FileResponse
-    return FileResponse(ROOT / 'static' / 'index.html')
+    return _dashboard_response()
 @app.get('/health')
 def gateway_health(): return {'ok':True,'status':'ok','service':'zevora','version':__version__,'gateway':'running'}
 def _schedule_shutdown():
@@ -525,15 +565,49 @@ async def update_provider_config(body: ProviderConfigRequest):
 
     reload_settings()
     refresh = await ProviderDiscovery(model_registry).refresh(provider_name)
+    verification = refresh[0] if refresh else {
+        'health_status': 'disabled' if body.enabled is False else 'unconfigured',
+        'models_discovered': 0,
+        'failure_reason': 'PROVIDER_DISABLED' if body.enabled is False else 'PROVIDER_UNCONFIGURED',
+        'failure_message': (
+            'The provider is disabled.' if body.enabled is False
+            else 'The provider credential is not configured.'
+        ),
+    }
     return {
         'ok': True,
         'provider': provider_name,
         'key_updated': body.api_key is not None,
-        'status': refresh[0]['health_status'] if refresh else (
-            'disabled' if body.enabled is False else 'unconfigured'
-        ),
-        'models_discovered': refresh[0]['models_discovered'] if refresh else 0,
+        'status': verification['health_status'],
+        'models_discovered': verification['models_discovered'],
+        'failure_reason': verification.get('failure_reason'),
+        'failure_message': verification.get('failure_message'),
     }
+
+
+@app.post('/api/providers/{provider_name}/test')
+async def test_builtin_provider(provider_name: str):
+    """Verify a built-in provider without changing its saved configuration."""
+    normalized = provider_name.strip().lower()
+    allowed = {'openai', 'xai', 'nvidia', 'deepseek', 'gemini', 'anthropic'}
+    if normalized not in allowed:
+        raise HTTPException(404, {
+            'code': 'PROVIDER_NOT_FOUND', 'message': 'Provider was not found.',
+        })
+    refresh = await ProviderDiscovery(model_registry).refresh(normalized)
+    verification = refresh[0]
+    return {
+        'ok': (
+            verification['health_status'] == 'healthy'
+            and verification['models_discovered'] > 0
+        ),
+        'provider': normalized,
+        'status': verification['health_status'],
+        'models_discovered': verification['models_discovered'],
+        'failure_reason': verification.get('failure_reason'),
+        'failure_message': verification.get('failure_message'),
+    }
+
 
 def _provider_service_error(error: Exception) -> HTTPException:
     if isinstance(error, KeyError):
@@ -856,11 +930,20 @@ def get_chat(chat_id:str):
     chat=workspace_manager.get_chat(chat_id)
     if not chat: raise HTTPException(404,'Chat not found')
     return chat
+@app.delete('/api/chats')
+def delete_all_chats():
+    with workspace_manager.connection() as conn:
+        count = conn.execute('SELECT COUNT(*) FROM chats').fetchone()[0]
+        conn.execute('DELETE FROM message_feedback')
+        conn.execute('DELETE FROM chat_messages')
+        conn.execute('DELETE FROM chats')
+    return {'ok':True,'deleted':count}
 @app.delete('/api/chats/{chat_id}')
 def delete_chat(chat_id:str):
     with workspace_manager.connection() as conn:
         row=conn.execute('SELECT id FROM chats WHERE id=?',(chat_id,)).fetchone()
         if not row: raise HTTPException(404,'Chat not found')
+        conn.execute('DELETE FROM message_feedback WHERE chat_id=?',(chat_id,))
         conn.execute('DELETE FROM chat_messages WHERE chat_id=?',(chat_id,))
         conn.execute('DELETE FROM chats WHERE id=?',(chat_id,))
     return {'ok':True,'deleted':chat_id}
@@ -883,11 +966,23 @@ async def chat_message(chat_id:str,body:ChatMessageRequest):
     ))
     metadata={key:result.get(key) for key in (
         'route','reason','provider','model','tools','quality_score','attachments',
-        'agent_trace','fallback_trace','estimated_cost','context_hash','project_files',
+        'agent_trace','agentic_log','fallback_trace','estimated_cost','context_hash','project_files',
         'project_discovery','context_status','flow','execution_ms',
     )}
     message_id=workspace_manager.add_exchange(chat_id,redact(body.content),result['response'],metadata)
-    return {**result,'message_id':message_id}
+    return {**result,'message_id':message_id,'chat_id':chat_id,'feedback':None}
+@app.post('/api/chats/{chat_id}/messages/{message_id}/feedback')
+def message_feedback(chat_id: str, message_id: int, body: ChatFeedbackRequest):
+    chat = workspace_manager.get_chat(chat_id)
+    if not chat:
+        raise HTTPException(404, 'Chat not found')
+    try:
+        rating = workspace_manager.set_feedback(chat_id, message_id, body.rating)
+    except LookupError as error:
+        raise HTTPException(404, str(error)) from error
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return {'ok': True, 'chat_id': chat_id, 'message_id': message_id, 'rating': rating}
 @app.post('/api/chat')
 async def chat(body:ChatRequest):
     request_id='zv-'+uuid.uuid4().hex[:12]
@@ -934,8 +1029,49 @@ def index(body: IndexRequest):
     }
 
 
+def _filter_routing_models(
+    available_models: list[dict], mode: str = 'auto',
+    provider: str | None = None, model: str | None = None,
+) -> list[dict]:
+    if mode == 'local':
+        return [item for item in available_models if item.get('provider') == 'local']
+    if mode in {'provider', 'model'}:
+        return [
+            item for item in available_models
+            if item.get('provider') == provider
+            and (mode != 'model' or item.get('model_id') == model)
+        ]
+    return available_models
+
+
+async def _routing_candidates(
+    prompt: str, context_tokens: int = 0, mode: str = 'auto',
+    provider: str | None = None, model: str | None = None,
+    require_native_tools: bool = True,
+) -> tuple[list[dict], list]:
+    """Resolve candidates, refreshing configured providers when the registry is stale."""
+    available_models = _filter_routing_models(
+        model_registry.list(), mode, provider, model
+    )
+    candidates = _cloud_candidates(
+        prompt, available_models, context_tokens, require_native_tools
+    )
+    if candidates:
+        return available_models, candidates
+
+    refresh_provider = 'local' if mode == 'local' else provider
+    await ProviderDiscovery(model_registry).refresh(refresh_provider)
+    available_models = _filter_routing_models(
+        model_registry.list(), mode, provider, model
+    )
+    return available_models, _cloud_candidates(
+        prompt, available_models, context_tokens, require_native_tools
+    )
+
+
 def _cloud_candidates(
-    prompt: str, available_models: list[dict], context_tokens: int = 0
+    prompt: str, available_models: list[dict], context_tokens: int = 0,
+    require_native_tools: bool = True,
 ) -> list:
     """Build the hybrid provider/model fallback sequence.
 
@@ -948,6 +1084,7 @@ def _cloud_candidates(
             available_models,
             performance=performance,
             context_tokens=context_tokens,
+            require_native_tools=require_native_tools,
         )
         return candidates if settings.cloud_fallback else candidates[:1]
 
@@ -956,6 +1093,7 @@ def _cloud_candidates(
         available_models,
         performance=performance,
         context_tokens=context_tokens,
+        require_native_tools=require_native_tools,
     )
     if primary.route not in {Route.LOCAL, Route.CLOUD}:
         return []
@@ -964,6 +1102,7 @@ def _cloud_candidates(
         fallback = hybrid_router.decide(
             prompt, available_models, exclude_providers={primary.provider},
             performance=performance, context_tokens=context_tokens,
+            require_native_tools=require_native_tools,
         )
         if fallback.route in {Route.LOCAL, Route.CLOUD}:
             candidates.append(fallback)
@@ -984,19 +1123,7 @@ async def _provider_completion(candidate, prompt: str, system: str,
 
 def _failure_reason(candidate, error: Exception) -> tuple[str, str]:
     """Return a stable, secret-free failure classification for the chat UI."""
-    if isinstance(error, ProviderAuthenticationError):
-        return 'AUTH_ERROR', 'API key is missing, invalid, or expired.'
-    if isinstance(error, ProviderRateLimitError):
-        return 'RATE_LIMIT', 'Provider quota or rate limit was reached.'
-    if isinstance(error, (ProviderTimeoutError, asyncio.TimeoutError, TimeoutError)):
-        return 'TIMEOUT', 'The model request timed out.'
-    if candidate.route is Route.LOCAL and isinstance(
-        error, (ProviderUnavailableError, ModelNotFoundError, ProviderError, OSError)
-    ):
-        return 'LOCAL_MODEL_UNAVAILABLE', 'The local model is not loaded or unavailable.'
-    if isinstance(error, (ProviderUnavailableError, ConnectionError, OSError)):
-        return 'NETWORK_ERROR', 'The provider could not be reached.'
-    return 'UNKNOWN', 'The model could not complete this request.'
+    return failure_details(error, local=candidate.route is Route.LOCAL)
 
 
 def _attempt_record(candidate, status: str, error: Exception | None = None) -> dict:
@@ -1047,10 +1174,18 @@ def _fallback_failure_message(fallback_trace: list[dict]) -> str:
 
 
 async def _cloud_completion(prompt: str, system: str, requested_format: str = '',
-                            response_validator=None) -> dict:
+                            response_validator=None,
+                            require_native_tools: bool = True,
+                            routing_prompt: str | None = None) -> dict:
     """Run hybrid completion; legacy name retained for caller compatibility."""
-    available_models = model_registry.list()
-    candidates = _cloud_candidates(prompt, available_models)
+    classification_prompt = routing_prompt if routing_prompt is not None else prompt
+    extra_context_tokens = max(
+        0, estimate_tokens(prompt) - estimate_tokens(classification_prompt)
+    )
+    available_models, candidates = await _routing_candidates(
+        classification_prompt, context_tokens=extra_context_tokens,
+        require_native_tools=require_native_tools,
+    )
     if not candidates:
         raise HTTPException(503, {
             'code': 'AI_EXECUTION_ERROR',
@@ -1160,6 +1295,8 @@ async def plan_agent_actions(body: PlanRequest):
             lambda response: parse_action_plan(
                 response, max_tool_calls - inspection_count, enabled_tools
             ),
+            require_native_tools=False,
+            routing_prompt=body.prompt,
         )
         actions = parse_action_plan(
             completion['response'], max_tool_calls - inspection_count, enabled_tools
@@ -1284,6 +1421,7 @@ async def task(body: TaskRequest):
     project_files_used: list[str] = []
     project_discovery = None
     agent_trace = None
+    agentic_log: list[str] | None = None
     root = None
     if not body.project and (body.actions or _requires_workspace_agent(prompt)):
         raise HTTPException(400, {
@@ -1321,14 +1459,7 @@ async def task(body: TaskRequest):
             executor = ProjectAgentExecutor(root, preferences=project.get('permissions'))
             agent_trace = executor.execute(
                 prompt,
-                [AgentAction(
-                    **{
-                        **action.model_dump(),
-                        # Approval must be explicit for each action. The client is
-                        # never allowed to turn an unapproved action into an approved one.
-                        'approved': action.approved,
-                    },
-                ) for action in body.actions],
+                [AgentAction(**action.model_dump()) for action in body.actions],
                 project_files_used,
             )
             if agent_trace.pending_approvals:
@@ -1348,7 +1479,7 @@ async def task(body: TaskRequest):
                     'failed_actions': failed_actions,
                     'agent_trace': agent_trace.to_dict(),
                 })
-            # Approved writes may have changed project state; rebuild authoritative context.
+            # Workspace actions may have changed project state; rebuild authoritative context.
             context = project_context(root, prompt)
             store.replace_project_files(str(root), context['rows'])
             project_hash = context['context_hash']
@@ -1392,6 +1523,7 @@ async def task(body: TaskRequest):
                     ),
                     'attachments': attachment_metadata,
                     'agent_trace': agent_trace.to_dict(),
+                    'agentic_log': None,
                 }
 
     context_hash = Store.key(project_hash, attachment_hash) if attachment_hash else project_hash
@@ -1418,6 +1550,7 @@ async def task(body: TaskRequest):
             ),
             'attachments': attachment_metadata,
             'fallback_trace': [{'source': 'local', 'status': 'success', 'kind': 'exact_cache'}],
+            'agentic_log': None,
         }
 
     routing_prompt = f'{prompt}\n[image attachment]' if images else prompt
@@ -1448,29 +1581,21 @@ async def task(body: TaskRequest):
     combined_context = context_economy.text
     context_status = 'RETRIEVAL_ENRICHED' if combined_context else 'ROUTER_REQUIRED'
 
-    system_prompt = body.system + (
+    system_prompt = body.system + '\n\n' + _AGENTIC_LOG_INSTRUCTION + (
         '\n\nUse the following approved reference skill as guidance. '
         'Never bypass the agent permission system.\n' + skill_context if skill_context else ''
     ) + (f"\n\nContext:\n{combined_context}" if combined_context else "")
 
     # Explicit selection narrows the same capability-aware router pool; it never bypasses routing checks.
-    available_models = model_registry.list()
-    if mode == 'local':
-        available_models = [item for item in available_models if item.get('provider') == 'local']
-    elif mode in {'provider', 'model'}:
-        available_models = [
-            item for item in available_models
-            if item.get('provider') == requested_provider
-            and (mode != 'model' or item.get('model_id') == requested_model)
-        ]
+    available_models, candidates = await _routing_candidates(
+        routing_prompt, context_economy.compressed_tokens,
+        mode, requested_provider, requested_model,
+    )
     if mode != 'auto' and not available_models:
         raise HTTPException(400, {
             'code': 'ROUTING_OVERRIDE_UNAVAILABLE',
             'message': 'The selected provider or model is not available in the model registry.',
         })
-    candidates = _cloud_candidates(
-        routing_prompt, available_models, context_economy.compressed_tokens
-    )
     fallback_trace = []
     if not candidates:
         raise HTTPException(503, {
@@ -1489,9 +1614,11 @@ async def task(body: TaskRequest):
             candidate_response, candidate_usage = await _provider_completion(
                 candidate, prompt, system_prompt, images
             )
-            if not validate(candidate_response)['accepted']:
+            clean_candidate, candidate_log = _parse_agentic_response(candidate_response)
+            if not validate(clean_candidate)['accepted']:
                 raise RuntimeError('Quality gate rejected response')
-            response, usage, decision = candidate_response, candidate_usage, candidate
+            response, usage, decision = clean_candidate, candidate_usage, candidate
+            agentic_log = candidate_log
             provider_name, selected_model = candidate.provider, candidate.model_id
             selected_metadata = _model_metadata(
                 available_models, provider_name, selected_model
@@ -1521,6 +1648,8 @@ async def task(body: TaskRequest):
         'anthropic': settings.anthropic_model, 'xai': '', 'nvidia': '', 'deepseek': '',
     }
     response = redact(response)
+    if agentic_log:
+        agentic_log = [redact(item) for item in agentic_log]
     model = selected_model or cloud_defaults.get(provider_name, '')
     input_tokens, output_tokens = _usage_tokens(usage)
     context_metrics = {
@@ -1607,6 +1736,7 @@ async def task(body: TaskRequest):
         ),
         'attachments': attachment_metadata, 'fallback_trace': fallback_trace,
         'agent_trace': agent_trace.to_dict() if agent_trace else None,
+        'agentic_log': agentic_log,
     }
 
 def _flow_status(*, workspace: str, discovery: str, context: str, route: str,
@@ -1657,5 +1787,4 @@ def _requires_workspace_agent(prompt: str) -> bool:
 def spa_fallback(full_path: str):
     if full_path.startswith('api/') or full_path.startswith('static/'):
         raise HTTPException(404, 'Not found')
-    from fastapi.responses import FileResponse
-    return FileResponse(ROOT / 'static' / 'index.html')
+    return _dashboard_response()

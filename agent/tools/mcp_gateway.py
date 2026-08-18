@@ -262,7 +262,11 @@ class LocalMCPGateway:
                     'message': 'Explicit approval required', 'risk': command_policy,
                     'command': args.get('command', ''),
                 }, True)
-        elif permission is Permission.APPROVAL and not approved:
+        elif (
+            permission is Permission.APPROVAL
+            and not approved
+            and decision.permission_type != 'workspace_filesystem'
+        ):
             return ToolResult(False, tool, 'Explicit approval required', True)
 
         if canonical == 'create_project':

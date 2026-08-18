@@ -1,18 +1,18 @@
-import {$, api, navigate, registerRoutes, render, setSidebarOpen} from './core.js';
-import {checkGateway, createProject, loadProject, pickProject, refreshProjects, renderChat, renderComposerItems, syncWorkspaceAccess, wireChatEvents} from './chat.js';
-import {confirmRenameChat, newChat, refreshSidebarChats, renderChatVault} from './chats.js';
-import {wireMarkdownActions} from './markdown.js';
-import {renderDocs} from './docs.js';
-import {renderProviders} from './providers.js';
-import {renderLocalAI} from './local-ai.js';
-import {renderModelRouter} from './model-router.js';
-import {renderMCP} from './mcp.js';
-import {configureTerminal, renderTerminal} from './terminal.js';
-import {renderFilesystem} from './filesystem.js';
-import {renderMemory} from './memory.js';
-import {renderCache} from './cache.js';
-import {renderUsage} from './usage.js';
-import {renderSettings} from './settings.js';
+import {$, api, navigate, registerRoutes, render, setSidebarOpen} from './core.js?v=20260818-7';
+import {checkGateway, createProject, loadProject, pickProject, refreshProjects, renderChat, renderComposerItems, syncWorkspaceAccess, wireChatEvents} from './chat.js?v=20260818-7';
+import {confirmRenameChat, newChat, refreshSidebarChats, renderChatVault} from './chats.js?v=20260818-7';
+import {wireMarkdownActions} from './markdown.js?v=20260818-7';
+import {renderDocs} from './docs.js?v=20260818-7';
+import {renderProviders} from './providers.js?v=20260818-7';
+import {renderLocalAI} from './local-ai.js?v=20260818-7';
+import {renderModelRouter} from './model-router.js?v=20260818-7';
+import {renderMCP} from './mcp.js?v=20260818-7';
+import {configureTerminal, renderTerminal} from './terminal.js?v=20260818-7';
+import {renderFilesystem} from './filesystem.js?v=20260818-7';
+import {renderMemory} from './memory.js?v=20260818-7';
+import {renderCache} from './cache.js?v=20260818-7';
+import {renderUsage} from './usage.js?v=20260818-7';
+import {renderSettings} from './settings.js?v=20260818-7';
 
 export const ROUTES = {
   '/': renderChat,

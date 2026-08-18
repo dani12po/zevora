@@ -11,7 +11,8 @@ class WorkspaceManager:
         with self.connection() as conn: conn.executescript('''CREATE TABLE IF NOT EXISTS workspace_projects (id INTEGER PRIMARY KEY, name TEXT, path TEXT UNIQUE, metadata TEXT, created_at TEXT, updated_at TEXT);
         CREATE TABLE IF NOT EXISTS workspace_permissions (workspace_id INTEGER PRIMARY KEY, preferences TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, title TEXT, project_id INTEGER, created_at TEXT, updated_at TEXT);
-        CREATE TABLE IF NOT EXISTS chat_messages (id INTEGER PRIMARY KEY, chat_id TEXT, role TEXT, content TEXT, metadata TEXT, created_at TEXT);''')
+        CREATE TABLE IF NOT EXISTS chat_messages (id INTEGER PRIMARY KEY, chat_id TEXT, role TEXT, content TEXT, metadata TEXT, created_at TEXT);
+        CREATE TABLE IF NOT EXISTS message_feedback (message_id INTEGER PRIMARY KEY, chat_id TEXT NOT NULL, rating TEXT NOT NULL CHECK(rating IN ('up','down')), updated_at TEXT NOT NULL);''')
     @contextmanager
     def connection(self):
         conn = sqlite3.connect(self.database, timeout=30)
@@ -109,7 +110,12 @@ class WorkspaceManager:
         with self.connection() as conn: return [dict(row) for row in conn.execute('SELECT * FROM chats ORDER BY updated_at DESC LIMIT 100')]
     def get_chat(self,id):
         with self.connection() as conn:
-            chat=conn.execute('SELECT * FROM chats WHERE id=?',(id,)).fetchone(); messages=conn.execute('SELECT role,content,metadata,created_at FROM chat_messages WHERE chat_id=? ORDER BY id',(id,)).fetchall()
+            chat=conn.execute('SELECT * FROM chats WHERE id=?',(id,)).fetchone()
+            messages=conn.execute(
+                '''SELECT m.id,m.role,m.content,m.metadata,m.created_at,f.rating feedback
+                   FROM chat_messages m LEFT JOIN message_feedback f ON f.message_id=m.id
+                   WHERE m.chat_id=? ORDER BY m.id''',(id,)
+            ).fetchall()
         return {**dict(chat),'messages':[dict(row) for row in messages]} if chat else None
     def add_message(self,chat_id,role,content,metadata=None):
         now=datetime.now(timezone.utc).isoformat()
@@ -130,5 +136,26 @@ class WorkspaceManager:
             )
             conn.execute('UPDATE chats SET updated_at=? WHERE id=?',(now,chat_id))
             return cursor.lastrowid
+    def set_feedback(self,chat_id,message_id,rating):
+        if rating not in {None,'up','down'}:
+            raise ValueError('rating must be up, down, or null')
+        now=datetime.now(timezone.utc).isoformat()
+        with self.connection() as conn:
+            message=conn.execute(
+                'SELECT role FROM chat_messages WHERE id=? AND chat_id=?',
+                (message_id,chat_id),
+            ).fetchone()
+            if not message or message['role']!='assistant':
+                raise LookupError('Assistant message not found in this chat')
+            if rating is None:
+                conn.execute('DELETE FROM message_feedback WHERE message_id=?',(message_id,))
+            else:
+                conn.execute(
+                    '''INSERT INTO message_feedback(message_id,chat_id,rating,updated_at)
+                       VALUES(?,?,?,?) ON CONFLICT(message_id) DO UPDATE SET
+                       rating=excluded.rating,updated_at=excluded.updated_at''',
+                    (message_id,chat_id,rating,now),
+                )
+        return rating
     def set_title(self,chat_id,title):
         with self.connection() as conn: conn.execute('UPDATE chats SET title=? WHERE id=?',(title[:80],chat_id))

@@ -1,4 +1,4 @@
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from enum import Enum
 
 from ..config import settings
@@ -243,9 +243,12 @@ class AdaptiveHybridRouter:
         performance: dict | None = None,
         context_tokens: int = 0,
         expected_output_tokens: int = 512,
+        require_native_tools: bool = True,
     ) -> list[RoutingDecision]:
         """Return healthy capable models in mode-aware fallback order."""
         task = self.classifier.classify(prompt)
+        if not require_native_tools and task.requires_tools:
+            task = replace(task, requires_tools=[])
         estimated_context_tokens = max(0, context_tokens) + estimate_tokens(prompt)
         local = self._rank_pool(
             models, task, True, performance,
@@ -277,6 +280,7 @@ class AdaptiveHybridRouter:
         performance: dict | None = None,
         context_tokens: int = 0,
         expected_output_tokens: int = 512,
+        require_native_tools: bool = True,
     ) -> RoutingDecision:
         task = self.classifier.classify(prompt)
         if cache_hit:
@@ -292,6 +296,7 @@ class AdaptiveHybridRouter:
             performance,
             context_tokens=context_tokens,
             expected_output_tokens=expected_output_tokens,
+            require_native_tools=require_native_tools,
         ):
             if (
                 candidate.provider not in excluded_providers

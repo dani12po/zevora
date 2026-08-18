@@ -42,7 +42,7 @@ def test_plan_parser_rejects_prose_unknown_tools_and_self_approval():
         }],
     }))
     assert actions[0].approved is False
-    assert public_action(actions[0])['requires_approval'] is True
+    assert public_action(actions[0])['requires_approval'] is False
 
 
 def test_planner_prompt_requires_real_file_actions_for_creation():
@@ -94,7 +94,7 @@ def test_planner_resolves_persisted_project_and_never_accepts_provider_approval(
         {'needs_tools': False, 'actions': []},
     ])
 
-    async def fake_completion(prompt, system, requested_format='', response_validator=None):
+    async def fake_completion(prompt, system, requested_format='', response_validator=None, **_kwargs):
         captured.update(prompt=prompt, system=system, requested_format=requested_format)
         response = json.dumps(next(responses))
         if response_validator:
@@ -132,7 +132,7 @@ def test_planner_observes_reads_then_defers_mutation_for_approval(tmp_path, monk
              'purpose': 'Apply requested change'}]},
     ])
 
-    async def fake_completion(prompt, _system, requested_format='', response_validator=None):
+    async def fake_completion(prompt, _system, requested_format='', response_validator=None, **_kwargs):
         prompts.append(prompt)
         response = json.dumps(next(responses))
         if response_validator:
@@ -148,7 +148,7 @@ def test_planner_observes_reads_then_defers_mutation_for_approval(tmp_path, monk
 
     assert '"content": "before"' in prompts[1]
     assert [action['tool'] for action in result['actions']] == ['edit_file']
-    assert result['actions'][0]['requires_approval'] is True
+    assert result['actions'][0]['requires_approval'] is False
     assert result['inspection_tool_calls'] == 1
     assert (root / 'notes.txt').read_text(encoding='utf-8') == 'before'
 
@@ -162,7 +162,7 @@ def test_planner_stops_repeated_inspection_plan(tmp_path, monkeypatch):
     repeated = json.dumps({'needs_tools': True, 'actions': [
         {'tool': 'read_file', 'arguments': {'path': 'notes.txt'}, 'purpose': 'Inspect'}]})
 
-    async def fake_completion(_prompt, _system, requested_format='', response_validator=None):
+    async def fake_completion(_prompt, _system, requested_format='', response_validator=None, **_kwargs):
         if response_validator:
             response_validator(repeated)
         return {'response': repeated, 'provider': 'openai', 'model': 'model',
@@ -235,7 +235,7 @@ def test_planner_uses_enabled_gateway_tools_for_provider_validation(tmp_path, mo
     def configured_gateway(path):
         return original_gateway(path, config_path)
 
-    async def fake_completion(_prompt, system, requested_format='', response_validator=None):
+    async def fake_completion(_prompt, system, requested_format='', response_validator=None, **_kwargs):
         systems.append(system)
         response = json.dumps({'needs_tools': True, 'actions': [
             {'tool': 'read_file', 'arguments': {'path': 'README.md'}, 'purpose': 'Inspect'},
@@ -254,6 +254,38 @@ def test_planner_uses_enabled_gateway_tools_for_provider_validation(tmp_path, mo
         )))
     assert 'read_file' not in systems[0]
     assert 'file_exists' in systems[0]
+
+
+def test_planner_routing_uses_user_intent_not_project_context_noise(tmp_path, monkeypatch):
+    models = [{
+        'provider': 'nvidia', 'model_id': 'planner-model',
+        'capabilities': ['general', 'coding', 'reasoning'],
+        'availability': 'verified', 'health_status': 'healthy',
+        'supports_tools': None, 'context_window': 4096,
+        'input_price': 0, 'output_price': 0,
+    }]
+    monkeypatch.setattr(main, 'model_registry', type('Registry', (), {
+        'list': lambda self: models,
+    })())
+    monkeypatch.setattr(main.settings, 'cloud_fallback', True)
+    monkeypatch.setattr(
+        main, 'get_provider',
+        lambda _name: type('Provider', (), {
+            'complete_for_model': lambda self, prompt, system, model_id: asyncio.sleep(
+                0, result=(json.dumps({'needs_tools': False, 'actions': []}), {})
+            ),
+        })(),
+    )
+    provider_prompt = (
+        'User request: inspect README.md\n\nProject context:\n'
+        'artifacts/screenshot.png\narchitecture error migration command\n'
+        + ('ordinary indexed content ' * 300)
+    )
+    result = asyncio.run(main._cloud_completion(
+        provider_prompt, 'return JSON', 'json', parse_action_plan,
+        require_native_tools=False, routing_prompt='inspect README.md',
+    ))
+    assert result['provider'] == 'nvidia'
 
 
 def test_workspace_request_detection_covers_indonesian_file_creation():

@@ -37,7 +37,7 @@ def _listener_pid(port):
             if connection.laddr and connection.laddr.ip == HOST and connection.laddr.port == port and connection.pid:
                 return connection.pid
     except (psutil.Error, OSError): pass
-    return os.getpid()
+    return None
 def start(background=True):
     current=status()
     if current['running']: return current
@@ -75,7 +75,11 @@ def start(background=True):
         for _ in range(45):
             time.sleep(.5)
             if _health(port):
-                stderr_log.close(); _write(process.pid,port); return status()
+                stderr_log.close()
+                # Windows virtual-environment launchers may spawn the interpreter
+                # that owns the socket, so persist the listener rather than its parent.
+                _write(_listener_pid(port) or process.pid,port)
+                return status()
             if process.poll() is not None:
                 # Process died; surface the log so the caller can report it.
                 stderr_log.close()
@@ -106,8 +110,11 @@ def stop(timeout=10):
         if not _health(current['port']):
             META.unlink(missing_ok=True); TOKEN.unlink(missing_ok=True); return True
         time.sleep(.5)
-    # Only the PID recorded by ZEVORA is considered for forced termination.
-    try: os.kill(int(current['pid']),9 if os.name!='nt' else 15)
+    # Metadata can contain a virtual-environment launcher PID. Resolve the
+    # current socket owner before the forced fallback so no serving child remains.
+    target_pid=_listener_pid(current['port']) or current.get('pid')
+    try:
+        if target_pid: os.kill(int(target_pid),9 if os.name!='nt' else 15)
     except OSError: pass
     META.unlink(missing_ok=True); TOKEN.unlink(missing_ok=True); return True
 def restart(): stop(); return start()

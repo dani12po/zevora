@@ -255,6 +255,17 @@ def test_tool_task_requires_explicit_tool_support():
     assert result.tools == ['terminal.execute']
 
 
+def test_json_planner_does_not_require_provider_native_tool_support():
+    unknown_tools = {**CHEAP, 'model_id': 'planner', 'supports_tools': None}
+    strict = AdaptiveHybridRouter().decide('inspect project files', [unknown_tools])
+    planner = AdaptiveHybridRouter().decide(
+        'inspect project files', [unknown_tools], require_native_tools=False
+    )
+    assert strict.route is Route.UNAVAILABLE
+    assert planner.provider == 'deepseek'
+    assert planner.tools == []
+
+
 def test_uninstalled_local_package_is_not_routable():
     uninstalled = {**LOCAL, 'model_id': 'not-installed', 'installed': False}
     result = AdaptiveHybridRouter().decide('explain REST API', [uninstalled, CHEAP])

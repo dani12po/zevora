@@ -1,3 +1,5 @@
+import asyncio
+
 import httpx
 
 
@@ -39,6 +41,23 @@ class TokenLimitError(ProviderError):
 
 class InvalidRequestError(ProviderError):
     pass
+
+
+def failure_details(error: Exception, *, local: bool = False) -> tuple[str, str]:
+    """Return a stable, secret-free provider failure classification."""
+    if isinstance(error, ProviderAuthenticationError):
+        return 'AUTH_ERROR', 'API key is missing, invalid, or expired.'
+    if isinstance(error, ProviderRateLimitError):
+        return 'RATE_LIMIT', 'Provider quota or rate limit was reached.'
+    if isinstance(error, (ProviderTimeoutError, asyncio.TimeoutError, TimeoutError)):
+        return 'TIMEOUT', 'The model request timed out.'
+    if local and isinstance(
+        error, (ProviderUnavailableError, ModelNotFoundError, ProviderError, OSError)
+    ):
+        return 'LOCAL_MODEL_UNAVAILABLE', 'The local model is not loaded or unavailable.'
+    if isinstance(error, (ProviderUnavailableError, ConnectionError, OSError, httpx.HTTPError)):
+        return 'NETWORK_ERROR', 'The provider could not be reached.'
+    return 'UNKNOWN', 'The model could not complete this request.'
 
 
 def raise_for_response(provider: str, response: httpx.Response) -> None:

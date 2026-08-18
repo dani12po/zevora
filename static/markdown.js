@@ -1,4 +1,4 @@
-import {escapeHtml} from './core.js';
+import {escapeHtml} from './core.js?v=20260818-7';
 
 function inlineMarkdown(value) {
   const parts = String(value ?? '').split(/(`[^`\n]+`)/g);

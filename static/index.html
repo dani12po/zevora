@@ -6,7 +6,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/styles.css?v=20260816-1">
+<link rel="stylesheet" href="/static/styles.css?v=20260818-4">
 </head>
 <body>
 <div class="app">
@@ -280,6 +280,25 @@
   </form>
 </dialog>
 
-<script type="module" src="/static/app.js?v=20260816-1"></script>
+<script>
+(() => {
+  const gateway = document.getElementById('gateway');
+  fetch('/health', {cache: 'no-store'})
+    .then(response => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
+    .then(health => {
+      const ready = health.status === 'ok' && health.service === 'zevora';
+      gateway.textContent = ready ? 'Gateway connected' : 'Gateway unavailable';
+      gateway.classList.toggle('is-online', ready);
+      gateway.classList.toggle('is-offline', !ready);
+      gateway.title = `${health.service || 'Gateway'} ${health.version || ''}`.trim();
+    })
+    .catch(error => {
+      gateway.textContent = 'Gateway offline - reload to retry';
+      gateway.classList.add('is-offline');
+      gateway.title = error.message || 'Gateway health check failed';
+    });
+})();
+</script>
+<script type="module" src="/static/app.js?v=20260818-7"></script>
 </body>
 </html>

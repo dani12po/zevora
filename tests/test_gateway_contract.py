@@ -95,6 +95,58 @@ def test_chat_connects_existing_conversation_to_selected_project(monkeypatch, tm
     assert captured['project'] == str(root.resolve())
 
 
+def test_delete_all_chats_removes_messages_but_keeps_projects(monkeypatch, tmp_path):
+    manager = WorkspaceManager(tmp_path / 'workspace.db')
+    root = tmp_path / 'project'
+    root.mkdir()
+    project = manager.load(root)
+    first = manager.create_chat('First chat', project['id'])
+    second = manager.create_chat('Second chat')
+    manager.add_message(first['id'], 'user', 'hello')
+    assistant_id = manager.add_message(second['id'], 'assistant', 'world')
+    manager.set_feedback(second['id'], assistant_id, 'up')
+    monkeypatch.setattr(main, 'workspace_manager', manager)
+
+    response = TestClient(main.app).delete('/api/chats')
+
+    assert response.status_code == 200
+    assert response.json() == {'ok': True, 'deleted': 2}
+    assert manager.chats() == []
+    with manager.connection() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM chat_messages').fetchone()[0] == 0
+        assert conn.execute('SELECT COUNT(*) FROM message_feedback').fetchone()[0] == 0
+    assert manager.get(project['id'])['id'] == project['id']
+
+
+def test_delete_all_chats_is_idempotent(monkeypatch, tmp_path):
+    manager = WorkspaceManager(tmp_path / 'workspace.db')
+    monkeypatch.setattr(main, 'workspace_manager', manager)
+
+    response = TestClient(main.app).delete('/api/chats')
+
+    assert response.status_code == 200
+    assert response.json() == {'ok': True, 'deleted': 0}
+
+
+@pytest.mark.parametrize(('raw', 'clean', 'workflow'), [
+    (
+        '<agentic_log>\n- Inspect the request\n2. Compose the answer\n</agentic_log>\nFinal answer',
+        'Final answer',
+        ['Inspect the request', 'Compose the answer'],
+    ),
+    (
+        'Before\n<AGENTIC_LOG>\n* First\n• Second\n</AGENTIC_LOG>\nAfter',
+        'Before\n\nAfter',
+        ['First', 'Second'],
+    ),
+    ('Answer without workflow', 'Answer without workflow', None),
+    ('<agentic_log>\n- unfinished\nAnswer', '<agentic_log>\n- unfinished\nAnswer', None),
+    ('<agentic_log>\n</agentic_log>\nAnswer', 'Answer', []),
+])
+def test_agentic_response_parser_is_tolerant(raw, clean, workflow):
+    assert main._parse_agentic_response(raw) == (clean, workflow)
+
+
 def test_frontend_api_reads_fastapi_detail_and_zevora_error_envelopes():
     source = (Path(__file__).parents[1] / 'static' / 'core.js').read_text(encoding='utf-8')
 
@@ -105,6 +157,9 @@ def test_frontend_api_reads_fastapi_detail_and_zevora_error_envelopes():
 def test_chat_ui_renders_attribution_markdown_attempts_and_retry():
     root = Path(__file__).parents[1] / 'static'
     chats = (root / 'chats.js').read_text(encoding='utf-8')
+    assert 'delete-all-chats' in chats
+    assert "api('/api/chats', {method:'DELETE'})" in chats
+    assert 'permanently removes every conversation' in chats
     chat = (root / 'chat.js').read_text(encoding='utf-8')
     markdown = (root / 'markdown.js').read_text(encoding='utf-8')
 
@@ -115,6 +170,8 @@ def test_chat_ui_renders_attribution_markdown_attempts_and_retry():
     assert 'data-copy-code' in markdown and 'navigator.clipboard.writeText' in markdown
     assert 'renderMarkdown(text)' in chats
     assert 'resizePrompt()' in chat and 'retrying:true' in chat
+    assert "api('/api/agent/plan'" not in chat
+    assert "api('/api/chat'" in chat
 
 
 def test_chat_failure_does_not_persist_half_exchange(monkeypatch, tmp_path):
@@ -143,15 +200,30 @@ def test_chat_success_persists_complete_exchange(monkeypatch, tmp_path):
         return {
             'response': 'done', 'route': 'CLOUD', 'reason': 'BEST_CLOUD_MATCH',
             'provider': 'openai', 'model': 'test-model', 'tools': [], 'quality_score': .9,
+            'agentic_log': ['Understand the request', 'Compose the response'],
+            'agent_trace': {
+                'stages': [],
+                'observations': [{'tool': 'read_file', 'ok': True}],
+                'pending_approvals': [],
+                'verified': True,
+            },
         }
 
     monkeypatch.setattr(main, 'workspace_manager', manager)
     monkeypatch.setattr(main, 'task', fake_task)
-    asyncio.run(main.chat(main.ChatRequest(message='hello', conversation_id=chat['id'])))
+    result = asyncio.run(main.chat(main.ChatRequest(
+        message='hello', conversation_id=chat['id'],
+    )))
     messages = manager.get_chat(chat['id'])['messages']
     assert [(item['role'], item['content']) for item in messages] == [
         ('user', 'hello'), ('assistant', 'done'),
     ]
+    assert result['message_id'] == messages[-1]['id']
+    assert result['chat_id'] == chat['id']
+    assert result['feedback'] is None
+    metadata = __import__('json').loads(messages[-1]['metadata'])
+    assert metadata['agentic_log'] == ['Understand the request', 'Compose the response']
+    assert metadata['agent_trace']['observations'] == [{'tool': 'read_file', 'ok': True}]
 
 
 def test_chat_forwards_actions_and_persists_safe_trace_metadata(monkeypatch, tmp_path):
@@ -191,6 +263,45 @@ def test_chat_forwards_actions_and_persists_safe_trace_metadata(monkeypatch, tmp
     assert 'agent_trace' in metadata and 'estimated_cost' in metadata
     assert 'c2VjcmV0' not in metadata
     assert 'Inspect source' not in metadata
+
+
+def test_feedback_persists_toggles_and_rejects_invalid_targets(monkeypatch, tmp_path):
+    manager = WorkspaceManager(tmp_path / 'workspace.db')
+    chat = manager.create_chat('Rated chat')
+    other = manager.create_chat('Other chat')
+    user_id = manager.add_message(chat['id'], 'user', 'question')
+    assistant_id = manager.add_message(chat['id'], 'assistant', 'answer')
+    monkeypatch.setattr(main, 'workspace_manager', manager)
+    client = TestClient(main.app)
+    endpoint = f"/api/chats/{chat['id']}/messages/{assistant_id}/feedback"
+
+    assert client.post(endpoint, json={'rating': 'up'}).json()['rating'] == 'up'
+    history = client.get(f"/api/chats/{chat['id']}").json()
+    assert history['messages'][-1]['id'] == assistant_id
+    assert history['messages'][-1]['feedback'] == 'up'
+
+    assert client.post(endpoint, json={'rating': None}).json()['rating'] is None
+    assert client.get(f"/api/chats/{chat['id']}").json()['messages'][-1]['feedback'] is None
+    assert client.post(endpoint, json={'rating': 'invalid'}).status_code == 422
+    assert client.post(
+        f"/api/chats/{other['id']}/messages/{assistant_id}/feedback",
+        json={'rating': 'down'},
+    ).status_code == 404
+    assert client.post(
+        f"/api/chats/{chat['id']}/messages/{user_id}/feedback",
+        json={'rating': 'down'},
+    ).status_code == 404
+
+
+def test_old_chat_history_without_workflow_metadata_remains_readable(tmp_path):
+    manager = WorkspaceManager(tmp_path / 'workspace.db')
+    chat = manager.create_chat('Legacy chat')
+    message_id = manager.add_message(chat['id'], 'assistant', 'legacy answer', {'route': 'LOCAL'})
+
+    message = manager.get_chat(chat['id'])['messages'][0]
+    assert message['id'] == message_id
+    assert message['feedback'] is None
+    assert 'agentic_log' not in __import__('json').loads(message['metadata'])
 
 
 def test_api_error_contract_is_json_and_gateway_shaped(monkeypatch, tmp_path):
@@ -409,9 +520,14 @@ def test_static_frontend_module_and_theme_contract():
     html = (static / 'index.html').read_text(encoding='utf-8')
     app_javascript = (static / 'app.js').read_text(encoding='utf-8')
     css = (static / 'styles.css').read_text(encoding='utf-8')
-    assert re.search(r'<script\s+type="module"\s+src="/static/app\.js', html)
+    assert re.search(r'<script\s+type="module"\s+src="/static/app\.js\?v=20260818-7"', html)
+    assert "fetch('/health', {cache: 'no-store'})" in html
+    assert 'Gateway connected' in html
     assert 'family=Inter' in html and 'family=JetBrains+Mono' in html
     assert 'onclick=' not in html
+    assert "from './core.js?v=20260818-7'" in app_javascript
+    assert "from './chat.js?v=20260818-7'" in app_javascript
+    assert "from './chats.js?v=20260818-7'" in app_javascript
 
     routes = {
         '/': 'renderChat', '/chats': 'renderChatVault', '/docs': 'renderDocs',
@@ -444,6 +560,27 @@ def test_static_frontend_module_and_theme_contract():
     assert '.route-enter{animation:route-enter 160ms ease-out both}' in css
     assert '.state-indicator-local' in css and '.state-indicator-cloud' in css
     assert '*::-webkit-scrollbar-thumb' in css
+
+    chats_javascript = (static / 'chats.js').read_text(encoding='utf-8')
+    chat_javascript = (static / 'chat.js').read_text(encoding='utf-8')
+    assert 'Workflow' in chats_javascript and 'Verified actions' in chats_javascript
+    assert 'meta.agentic_log' in chats_javascript
+    assert 'meta.agent_trace?.observations' in chats_javascript
+    assert 'navigator.clipboard.writeText(text)' in chats_javascript
+    assert '/messages/${meta.message_id}/feedback' in chats_javascript
+    assert "up'; up.textContent" in chats_javascript
+    assert "down'; down.textContent" in chats_javascript
+    assert 'configureMessageActions' in chats_javascript
+    assert 'regenerate_content:content' in chat_javascript
+    assert 'retrying: true' in chat_javascript
+    assert '.workflow-disclosure' in css and '.message-toolbar' in css
+
+
+def test_dashboard_shell_is_not_cached():
+    response = TestClient(main.app).get('/')
+    assert response.status_code == 200
+    assert response.headers['cache-control'] == 'no-cache, no-store, must-revalidate'
+    assert response.headers['pragma'] == 'no-cache'
 
 
 def test_provider_config_exposes_local_runtime_without_api_key():
@@ -517,6 +654,8 @@ def test_provider_config_writes_env_and_json_atomically(monkeypatch, tmp_path):
         'key_updated': True,
         'status': 'healthy',
         'models_discovered': 2,
+        'failure_reason': None,
+        'failure_message': None,
     }
     env_content = env_file.read_text(encoding='utf-8')
     assert env_content == (
@@ -536,6 +675,59 @@ def test_provider_config_writes_env_and_json_atomically(monkeypatch, tmp_path):
     }
     assert not env_file.with_suffix('.env.tmp').exists()
     assert not providers_file.with_suffix('.json.tmp').exists()
+
+
+def test_provider_config_returns_verification_failure_reason(monkeypatch, tmp_path):
+    config_dir = tmp_path / 'config'
+    config_dir.mkdir()
+    (config_dir / 'providers.json').write_text('{"providers": {}}', encoding='utf-8')
+    monkeypatch.setattr(main, 'ROOT', tmp_path)
+    monkeypatch.setattr(main, 'reload_settings', lambda: None)
+
+    async def failed_refresh(self, provider_name=None):
+        return [{
+            'health_status': 'unavailable', 'models_discovered': 0,
+            'failure_reason': 'AUTH_ERROR',
+            'failure_message': 'API key is missing, invalid, or expired.',
+        }]
+
+    monkeypatch.setattr(main.ProviderDiscovery, 'refresh', failed_refresh)
+    result = asyncio.run(main.update_provider_config(main.ProviderConfigRequest(
+        provider='openai', api_key='rejected-key',
+    )))
+
+    assert result['status'] != 'healthy'
+    assert result['models_discovered'] == 0
+    assert result['failure_reason'] == 'AUTH_ERROR'
+    assert 'rejected-key' not in str(result)
+
+
+def test_builtin_provider_connection_test_rejects_zero_models(monkeypatch):
+    async def empty_refresh(self, provider_name=None):
+        return [{
+            'health_status': 'healthy', 'models_discovered': 0,
+            'failure_reason': 'NO_MODELS',
+            'failure_message': 'The provider is reachable but returned no usable models.',
+        }]
+
+    monkeypatch.setattr(main.ProviderDiscovery, 'refresh', empty_refresh)
+    result = asyncio.run(main.test_builtin_provider('openai'))
+
+    assert result['ok'] is False
+    assert result['status'] == 'healthy'
+    assert result['models_discovered'] == 0
+    assert result['failure_reason'] == 'NO_MODELS'
+
+
+def test_provider_frontend_distinguishes_verification_results():
+    providers = (
+        Path(__file__).resolve().parents[1] / 'static' / 'providers.js'
+    ).read_text(encoding='utf-8')
+    assert 'Test connection' in providers
+    assert "result.status === 'unavailable'" in providers
+    assert "result.models_discovered === 0" in providers
+    assert 'NO_MODELS' not in providers  # Render the server-provided reason generically.
+    assert 'setTimeout(()=>message.classList.remove' not in providers
 
 
 def test_routing_performance_aggregates_failures(tmp_path):

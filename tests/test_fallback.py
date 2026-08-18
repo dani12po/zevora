@@ -36,6 +36,82 @@ def _model(provider, model_id):
     }
 
 
+def test_cloud_completion_refreshes_empty_registry_and_uses_discovered_provider(
+    tmp_path, monkeypatch
+):
+    models = []
+    refreshed = []
+
+    class Registry:
+        def list(self):
+            return list(models)
+
+    class Discovery:
+        def __init__(self, registry):
+            assert registry is main.model_registry
+
+        async def refresh(self, provider_name=None):
+            refreshed.append(provider_name)
+            models.append(_model('openai', 'discovered-model'))
+            return [{'provider': 'openai', 'health_status': 'healthy'}]
+
+    class Provider:
+        async def complete_for_model(self, _prompt, _system, model_id):
+            assert model_id == 'discovered-model'
+            return 'automatic response', {'input_tokens': 2, 'output_tokens': 3}
+
+    monkeypatch.setattr(main, 'store', Store(tmp_path / 'agent.db'))
+    monkeypatch.setattr(main, 'model_registry', Registry())
+    monkeypatch.setattr(main, 'ProviderDiscovery', Discovery)
+    monkeypatch.setattr(main, 'get_provider', lambda _name: Provider())
+    monkeypatch.setattr(main.settings, 'cloud_fallback', True)
+    monkeypatch.setattr(
+        'agent.routing.hybrid_router.provider_policy',
+        lambda _name: {'enabled': True, 'routing_priority': 50, 'default_model': ''},
+    )
+
+    result = asyncio.run(main._cloud_completion('explain this', 'be concise'))
+
+    assert result['response'] == 'automatic response'
+    assert result['provider'] == 'openai'
+    assert refreshed == [None]
+
+
+def test_cloud_completion_does_not_refresh_when_registry_has_healthy_candidate(
+    tmp_path, monkeypatch
+):
+    model = _model('openai', 'ready-model')
+
+    class Registry:
+        def list(self):
+            return [model]
+
+    class Discovery:
+        def __init__(self, _registry):
+            pass
+
+        async def refresh(self, _provider_name=None):
+            raise AssertionError('healthy registry must not be refreshed per chat')
+
+    class Provider:
+        async def complete_for_model(self, _prompt, _system, _model_id):
+            return 'ready response', {'input_tokens': 1, 'output_tokens': 1}
+
+    monkeypatch.setattr(main, 'store', Store(tmp_path / 'agent.db'))
+    monkeypatch.setattr(main, 'model_registry', Registry())
+    monkeypatch.setattr(main, 'ProviderDiscovery', Discovery)
+    monkeypatch.setattr(main, 'get_provider', lambda _name: Provider())
+    monkeypatch.setattr(main.settings, 'cloud_fallback', True)
+    monkeypatch.setattr(
+        'agent.routing.hybrid_router.provider_policy',
+        lambda _name: {'enabled': True, 'routing_priority': 50, 'default_model': ''},
+    )
+
+    result = asyncio.run(main._cloud_completion('explain this', 'be concise'))
+
+    assert result['response'] == 'ready response'
+
+
 def test_cloud_completion_tries_another_model_from_same_provider(tmp_path, monkeypatch):
     models = [_model('first', 'model-a'), _model('first', 'model-b')]
 

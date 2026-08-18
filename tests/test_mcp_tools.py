@@ -17,13 +17,14 @@ def test_create_project_is_rooted_and_safe(tmp_path):
     assert not gateway.execute('create_project',{'name':'../outside'},approved=True).ok
 
 
-def test_write_and_delete_require_approval(tmp_path):
+def test_selected_workspace_write_and_delete_do_not_require_approval(tmp_path):
     gateway = LocalMCPGateway(tmp_path)
-    assert gateway.execute('write_file', {'path': 'note.txt', 'content': 'hello'}).approval_required
-    written = gateway.execute('write_file', {'path': 'note.txt', 'content': 'hello'}, approved=True)
-    assert written.ok and (tmp_path / 'note.txt').read_text() == 'hello'
-    deleted = gateway.execute('delete_file', {'path': 'note.txt'}, approved=True)
-    assert deleted.ok and not (tmp_path / 'note.txt').exists()
+    written = gateway.execute('write_file', {'path': 'note.txt', 'content': 'hello'})
+    assert written.ok and not written.approval_required
+    assert (tmp_path / 'note.txt').read_text() == 'hello'
+    deleted = gateway.execute('delete_file', {'path': 'note.txt'})
+    assert deleted.ok and not deleted.approval_required
+    assert not (tmp_path / 'note.txt').exists()
 
 
 def test_terminal_is_allowlisted_and_rooted(tmp_path):
@@ -94,7 +95,7 @@ def test_read_file_is_chunked_and_search_excludes_noise(tmp_path):
     assert found == ['src/main.ts']
 
 
-def test_edit_requires_one_exact_match_and_mutations_require_approval(tmp_path):
+def test_edit_requires_one_exact_match_and_workspace_mutations_run_immediately(tmp_path):
     gateway = LocalMCPGateway(tmp_path)
     (tmp_path / 'note.txt').write_text('same same', encoding='utf-8')
     ambiguous = gateway.execute('edit_file', {
@@ -102,8 +103,9 @@ def test_edit_requires_one_exact_match_and_mutations_require_approval(tmp_path):
     }, approved=True)
     assert not ambiguous.ok and (tmp_path / 'note.txt').read_text() == 'same same'
 
-    pending = gateway.execute('delete_file', {'path': 'note.txt'})
-    assert pending.approval_required and (tmp_path / 'note.txt').exists()
+    deleted = gateway.execute('delete_file', {'path': 'note.txt'})
+    assert deleted.ok and not deleted.approval_required
+    assert not (tmp_path / 'note.txt').exists()
 
 
 def test_command_risk_policy_requires_approval_or_rejects(tmp_path):
@@ -169,7 +171,7 @@ def test_tool_enabled_state_persists_and_blocks_canonical_alias(tmp_path):
     ).ok
 
 
-def test_disabled_mutation_stays_approval_gated_after_reenable(tmp_path):
+def test_disabled_mutation_runs_in_selected_workspace_after_reenable(tmp_path):
     config_path = tmp_path / 'mcp.json'
     gateway = LocalMCPGateway(tmp_path, config_path)
     gateway.set_tool_enabled('write_file', False)
@@ -177,8 +179,9 @@ def test_disabled_mutation_stays_approval_gated_after_reenable(tmp_path):
     assert not disabled.ok and not (tmp_path / 'note.txt').exists()
 
     gateway.set_tool_enabled('write_file', True)
-    pending = gateway.execute('write_file', {'path': 'note.txt', 'content': 'pending'})
-    assert pending.approval_required and not (tmp_path / 'note.txt').exists()
+    written = gateway.execute('write_file', {'path': 'note.txt', 'content': 'written'})
+    assert written.ok and not written.approval_required
+    assert (tmp_path / 'note.txt').read_text() == 'written'
 
 
 def test_tool_update_api_persists_and_rejects_unknown_tool(tmp_path, monkeypatch):

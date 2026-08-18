@@ -46,7 +46,7 @@
       "supports_vision": false
     },
     "nvidia": {
-      "enabled": false,
+      "enabled": true,
       "routing_priority": 90,
       "default_model": "z-ai/glm-5.2",
       "supports_vision": false

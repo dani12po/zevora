@@ -11,10 +11,6 @@ ALLOWED_TOOLS = {
     'create_file', 'write_file', 'edit_file', 'delete_file', 'move_file',
     'copy_file', 'execute_command', 'git',
 }
-MUTATING_TOOLS = {
-    'create_file', 'write_file', 'edit_file', 'delete_file', 'move_file',
-    'copy_file',
-}
 _JSON_BLOCK = re.compile(r'^\s*```(?:json)?\s*(.*?)\s*```\s*$', re.DOTALL | re.IGNORECASE)
 
 
@@ -105,7 +101,9 @@ def parse_action_plan(
 
 
 def public_action(action: AgentAction) -> dict[str, Any]:
-    requires_approval = action.tool in MUTATING_TOOLS
+    # A selected workspace authorizes filesystem changes inside its root. Only
+    # separately scoped operations such as restricted commands need approval.
+    requires_approval = False
     if action.tool == 'execute_command':
         from agent.tools.mcp_gateway import LocalMCPGateway
         risk, _ = LocalMCPGateway.command_policy(action.arguments.get('command', ''))

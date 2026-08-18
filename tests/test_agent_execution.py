@@ -13,7 +13,7 @@ def stage_names(trace):
     return [stage['stage'] for stage in trace.stages]
 
 
-def test_unapproved_write_stops_at_approval_boundary(tmp_path):
+def test_selected_workspace_authorizes_write_without_separate_approval(tmp_path):
     executor = ProjectAgentExecutor(tmp_path)
 
     trace = executor.execute(
@@ -21,9 +21,9 @@ def test_unapproved_write_stops_at_approval_boundary(tmp_path):
         [AgentAction('write_file', {'path': 'note.txt', 'content': 'hello'})],
     )
 
-    assert not (tmp_path / 'note.txt').exists()
-    assert trace.pending_approvals[0]['tool'] == 'write_file'
-    assert trace.observations[0]['approval_required'] is True
+    assert (tmp_path / 'note.txt').read_text(encoding='utf-8') == 'hello'
+    assert trace.pending_approvals == []
+    assert trace.observations[0]['ok'] is True
     assert stage_names(trace)[:5] == [
         'UNDERSTAND', 'PLAN', 'INSPECT', 'RETRIEVE', 'REASON'
     ]
@@ -89,52 +89,48 @@ def test_indonesian_workspace_request_without_project_never_falls_back_to_chat()
     assert 'Select or open' in raised.value.detail['message']
 
 
-def test_task_returns_pending_approval_before_provider_call(tmp_path, monkeypatch):
+def test_task_executes_selected_workspace_write_before_provider_call(tmp_path, monkeypatch):
     manager = main.WorkspaceManager(tmp_path / 'workspace.db')
     monkeypatch.setattr(main, 'workspace_manager', manager)
 
-    async def provider_must_not_run(*_args, **_kwargs):
-        raise AssertionError('provider should not run before approval')
+    def provider_must_not_run(*_args, **_kwargs):
+        raise AssertionError('provider should not run after a successful mutation')
 
     monkeypatch.setattr(main.hybrid_router, 'decide', provider_must_not_run)
-    request = main.TaskRequest(
+    result = asyncio.run(main.task(main.TaskRequest(
         prompt='write a file', project=str(tmp_path),
         actions=[main.AgentActionRequest(
             tool='write_file', arguments={'path': 'note.txt', 'content': 'hello'}
         )],
-    )
+    )))
 
-    with pytest.raises(HTTPException) as raised:
-        asyncio.run(main.task(request))
+    assert (tmp_path / 'note.txt').read_text(encoding='utf-8') == 'hello'
+    assert result['reason'] == 'TOOLS_EXECUTED'
+    assert result['agent_trace']['pending_approvals'] == []
 
-    assert raised.value.status_code == 403
-    assert raised.value.detail['code'] == 'APPROVAL_REQUIRED'
-    assert raised.value.detail['pending_approvals'][0]['tool'] == 'write_file'
-    assert not (tmp_path / 'note.txt').exists()
 
-def test_dashboard_chat_cannot_bypass_workspace_write_approval(tmp_path, monkeypatch):
+def test_dashboard_chat_may_write_inside_selected_workspace_without_approval(
+    tmp_path, monkeypatch
+):
     manager = main.WorkspaceManager(tmp_path / 'workspace.db')
     monkeypatch.setattr(main, 'workspace_manager', manager)
 
-    with pytest.raises(HTTPException) as raised:
-        asyncio.run(main.task(main.TaskRequest(
-            prompt='save a note from dashboard chat',
-            project=str(tmp_path),
-            actions=[main.AgentActionRequest(
-                tool='write_file',
-                arguments={'path': 'note.txt', 'content': 'saved'},
-                approved=False,
-            )],
-        )))
+    result = asyncio.run(main.task(main.TaskRequest(
+        prompt='save a note from dashboard chat',
+        project=str(tmp_path),
+        actions=[main.AgentActionRequest(
+            tool='write_file',
+            arguments={'path': 'note.txt', 'content': 'saved'},
+            approved=False,
+        )],
+    )))
 
-    assert raised.value.status_code == 403
-    assert raised.value.detail['code'] == 'APPROVAL_REQUIRED'
-    assert raised.value.detail['pending_approvals'][0]['tool'] == 'write_file'
-    assert not (tmp_path / 'note.txt').exists()
+    assert (tmp_path / 'note.txt').read_text(encoding='utf-8') == 'saved'
+    assert result['reason'] == 'TOOLS_EXECUTED'
 
 
 
-def test_approved_action_still_blocks_path_escape(tmp_path, monkeypatch):
+def test_action_still_blocks_path_escape_without_approval(tmp_path, monkeypatch):
     manager = main.WorkspaceManager(tmp_path / 'workspace.db')
     monkeypatch.setattr(main, 'workspace_manager', manager)
 
@@ -145,13 +141,37 @@ def test_approved_action_still_blocks_path_escape(tmp_path, monkeypatch):
             actions=[main.AgentActionRequest(
                 tool='write_file',
                 arguments={'path': '../outside.txt', 'content': 'blocked'},
-                approved=True,
+                approved=False,
             )],
         )))
 
     assert raised.value.status_code == 409
     assert raised.value.detail['code'] == 'ACTION_FAILED'
     assert not (tmp_path.parent / 'outside.txt').exists()
+
+
+def test_absolute_path_into_another_workspace_is_blocked(tmp_path, monkeypatch):
+    selected = tmp_path / 'workspace-a'
+    other = tmp_path / 'workspace-b'
+    selected.mkdir()
+    other.mkdir()
+    manager = main.WorkspaceManager(tmp_path / 'workspace.db')
+    monkeypatch.setattr(main, 'workspace_manager', manager)
+
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(main.task(main.TaskRequest(
+            prompt='write into another workspace',
+            project=str(selected),
+            actions=[main.AgentActionRequest(
+                tool='write_file',
+                arguments={'path': str(other / 'outside.txt'), 'content': 'blocked'},
+                approved=True,
+            )],
+        )))
+
+    assert raised.value.status_code == 409
+    assert raised.value.detail['code'] == 'ACTION_FAILED'
+    assert not (other / 'outside.txt').exists()
 
 
 def test_approved_action_still_blocks_dangerous_command(tmp_path, monkeypatch):
