@@ -1,18 +1,18 @@
-import {$, api, navigate, registerRoutes, render, setSidebarOpen} from './core.js?v=20260818-7';
-import {checkGateway, createProject, loadProject, pickProject, refreshProjects, renderChat, renderComposerItems, syncWorkspaceAccess, wireChatEvents} from './chat.js?v=20260818-7';
-import {confirmRenameChat, newChat, refreshSidebarChats, renderChatVault} from './chats.js?v=20260818-7';
-import {wireMarkdownActions} from './markdown.js?v=20260818-7';
-import {renderDocs} from './docs.js?v=20260818-7';
-import {renderProviders} from './providers.js?v=20260818-7';
-import {renderLocalAI} from './local-ai.js?v=20260818-7';
-import {renderModelRouter} from './model-router.js?v=20260818-7';
-import {renderMCP} from './mcp.js?v=20260818-7';
-import {configureTerminal, renderTerminal} from './terminal.js?v=20260818-7';
-import {renderFilesystem} from './filesystem.js?v=20260818-7';
-import {renderMemory} from './memory.js?v=20260818-7';
-import {renderCache} from './cache.js?v=20260818-7';
-import {renderUsage} from './usage.js?v=20260818-7';
-import {renderSettings} from './settings.js?v=20260818-7';
+import {$, api, navigate, registerRoutes, render, setSidebarOpen} from './core.js?v=20260818-8';
+import {checkGateway, createProject, loadProject, pickProject, refreshProjects, renderChat, renderComposerItems, syncWorkspaceAccess, wireChatEvents} from './chat.js?v=20260818-8';
+import {confirmRenameChat, newChat, refreshSidebarChats, renderChatVault} from './chats.js?v=20260818-8';
+import {wireMarkdownActions} from './markdown.js?v=20260818-8';
+import {renderDocs} from './docs.js?v=20260818-8';
+import {renderProviders} from './providers.js?v=20260818-8';
+import {renderLocalAI} from './local-ai.js?v=20260818-8';
+import {renderModelRouter} from './model-router.js?v=20260818-8';
+import {renderMCP} from './mcp.js?v=20260818-8';
+import {configureTerminal, renderTerminal} from './terminal.js?v=20260818-8';
+import {renderFilesystem} from './filesystem.js?v=20260818-8';
+import {renderMemory} from './memory.js?v=20260818-8';
+import {renderCache} from './cache.js?v=20260818-8';
+import {renderUsage} from './usage.js?v=20260818-8';
+import {renderSettings} from './settings.js?v=20260818-8';
 
 export const ROUTES = {
   '/': renderChat,

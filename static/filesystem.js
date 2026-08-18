@@ -1,4 +1,4 @@
-import {$, api, emptyState, escapeHtml, loadingState, setMessages, setPanel, state} from './core.js?v=20260818-7';
+import {$, api, emptyState, escapeHtml, loadingState, setMessages, setPanel, state} from './core.js?v=20260818-8';
 
 export async function renderFilesystem() {
   const projectId = $('project-select').value;

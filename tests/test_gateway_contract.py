@@ -170,6 +170,10 @@ def test_chat_ui_renders_attribution_markdown_attempts_and_retry():
     assert 'data-copy-code' in markdown and 'navigator.clipboard.writeText' in markdown
     assert 'renderMarkdown(text)' in chats
     assert 'resizePrompt()' in chat and 'retrying:true' in chat
+    assert 'regenerateResponse(content, meta, message, originalText)' in chat
+    assert '/regenerate`' in chat and 'configureMessageActions({regenerate: regenerateResponse})' in chat
+    assert 'regenerate: content => send(' not in chat
+    assert 'replaceAssistantMessage(message, data.response' in chat
     assert "api('/api/agent/plan'" not in chat
     assert "api('/api/chat'" in chat
 
@@ -224,6 +228,56 @@ def test_chat_success_persists_complete_exchange(monkeypatch, tmp_path):
     metadata = __import__('json').loads(messages[-1]['metadata'])
     assert metadata['agentic_log'] == ['Understand the request', 'Compose the response']
     assert metadata['agent_trace']['observations'] == [{'tool': 'read_file', 'ok': True}]
+
+
+def test_regenerate_three_times_replaces_one_assistant_turn(monkeypatch, tmp_path):
+    manager = WorkspaceManager(tmp_path / 'workspace.db')
+    chat = manager.create_chat('Existing turn')
+    assistant_id = manager.add_exchange(chat['id'], 'hello', 'first answer', {'provider': 'old'})
+    responses = iter(['second answer', 'third answer', 'fourth answer'])
+
+    async def fake_task(request):
+        assert request.prompt == 'hello'
+        return {
+            'response': next(responses), 'route': 'CLOUD', 'reason': 'BEST_CLOUD_MATCH',
+            'provider': 'openai', 'model': 'test-model', 'tools': [], 'quality_score': .9,
+        }
+
+    monkeypatch.setattr(main, 'workspace_manager', manager)
+    monkeypatch.setattr(main, 'task', fake_task)
+    client = TestClient(main.app)
+    endpoint = f"/api/chats/{chat['id']}/messages/{assistant_id}/regenerate"
+
+    for expected in ('second answer', 'third answer', 'fourth answer'):
+        response = client.post(endpoint, json={'content': 'ignored client copy'})
+        assert response.status_code == 200
+        assert response.json()['response'] == expected
+        assert response.json()['message_id'] == assistant_id
+        assert response.json()['regenerated'] is True
+
+    messages = manager.get_chat(chat['id'])['messages']
+    assert [(item['id'], item['role'], item['content']) for item in messages] == [
+        (messages[0]['id'], 'user', 'hello'),
+        (assistant_id, 'assistant', 'fourth answer'),
+    ]
+
+
+def test_regenerate_rejects_non_assistant_target_before_completion(monkeypatch, tmp_path):
+    manager = WorkspaceManager(tmp_path / 'workspace.db')
+    chat = manager.create_chat('Invalid regenerate')
+    user_id = manager.add_message(chat['id'], 'user', 'hello')
+
+    async def unexpected_task(_request):
+        raise AssertionError('Task must not run for a non-assistant target')
+
+    monkeypatch.setattr(main, 'workspace_manager', manager)
+    monkeypatch.setattr(main, 'task', unexpected_task)
+    response = TestClient(main.app).post(
+        f"/api/chats/{chat['id']}/messages/{user_id}/regenerate",
+        json={'content': 'hello'},
+    )
+    assert response.status_code == 404
+    assert len(manager.get_chat(chat['id'])['messages']) == 1
 
 
 def test_chat_forwards_actions_and_persists_safe_trace_metadata(monkeypatch, tmp_path):
@@ -520,14 +574,14 @@ def test_static_frontend_module_and_theme_contract():
     html = (static / 'index.html').read_text(encoding='utf-8')
     app_javascript = (static / 'app.js').read_text(encoding='utf-8')
     css = (static / 'styles.css').read_text(encoding='utf-8')
-    assert re.search(r'<script\s+type="module"\s+src="/static/app\.js\?v=20260818-7"', html)
+    assert re.search(r'<script\s+type="module"\s+src="/static/app\.js\?v=20260818-8"', html)
     assert "fetch('/health', {cache: 'no-store'})" in html
     assert 'Gateway connected' in html
     assert 'family=Inter' in html and 'family=JetBrains+Mono' in html
     assert 'onclick=' not in html
-    assert "from './core.js?v=20260818-7'" in app_javascript
-    assert "from './chat.js?v=20260818-7'" in app_javascript
-    assert "from './chats.js?v=20260818-7'" in app_javascript
+    assert "from './core.js?v=20260818-8'" in app_javascript
+    assert "from './chat.js?v=20260818-8'" in app_javascript
+    assert "from './chats.js?v=20260818-8'" in app_javascript
 
     routes = {
         '/': 'renderChat', '/chats': 'renderChatVault', '/docs': 'renderDocs',
@@ -572,7 +626,10 @@ def test_static_frontend_module_and_theme_contract():
     assert "down'; down.textContent" in chats_javascript
     assert 'configureMessageActions' in chats_javascript
     assert 'regenerate_content:content' in chat_javascript
-    assert 'retrying: true' in chat_javascript
+    assert 'configureMessageActions({regenerate: regenerateResponse})' in chat_javascript
+    assert '/messages/${meta.message_id}/regenerate' in chat_javascript
+    assert 'replaceAssistantMessage(message, data.response' in chat_javascript
+    assert 'regenerate: content => send(' not in chat_javascript
     assert '.workflow-disclosure' in css and '.message-toolbar' in css
 
 

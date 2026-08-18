@@ -1,5 +1,5 @@
-import {$, api, escapeHtml, exposeHandlers, loadingState, navigate, pageWrap, setMessages, setPanel, setSidebarOpen, state, userErrorMessage} from './core.js?v=20260818-7';
-import {renderMarkdown} from './markdown.js?v=20260818-7';
+import {$, api, escapeHtml, exposeHandlers, loadingState, navigate, pageWrap, setMessages, setPanel, setSidebarOpen, state, userErrorMessage} from './core.js?v=20260818-8';
+import {renderMarkdown} from './markdown.js?v=20260818-8';
 
 let renamingChatId = null;
 let regenerateMessage = null;
@@ -84,9 +84,23 @@ function appendToolbar(bubble, text, meta) {
   const down = document.createElement('button'); down.type = 'button'; down.className = 'icon-btn'; down.dataset.rating = 'down'; down.textContent = '↓'; down.title = 'Not helpful'; down.setAttribute('aria-label', 'Thumbs down');
   [up, down].forEach(item => item.onclick = () => setMessageFeedback(item, item.dataset.rating, meta).catch(() => item.classList.add('error')));
   const regenerate = document.createElement('button'); regenerate.type = 'button'; regenerate.className = 'icon-btn'; regenerate.textContent = '↻'; regenerate.title = 'Regenerate answer'; regenerate.setAttribute('aria-label', 'Regenerate answer');
-  regenerate.onclick = () => regenerateMessage?.(meta.regenerate_content || '');
+  regenerate.onclick = () => regenerateMessage?.(meta.regenerate_content || '', meta, bubble.closest('.message-row'), text);
   toolbar.append(copy, up, down, regenerate); bubble.append(toolbar);
   toolbar.querySelectorAll('[data-rating]').forEach(item => item.classList.toggle('is-active', item.dataset.rating === meta.feedback));
+}
+
+function renderAssistantBubble(bubble, text, meta) {
+  bubble.innerHTML = '';
+  bubble.insertAdjacentHTML('beforeend', workflowHtml(meta));
+  const body = document.createElement('div'); body.className = 'message-body'; body.innerHTML = renderMarkdown(text);
+  bubble.append(body);
+  appendToolbar(bubble, text, meta);
+}
+
+export function replaceAssistantMessage(message, text, meta = {}) {
+  const bubble = message?.querySelector('.message-bubble');
+  if (!bubble) return;
+  renderAssistantBubble(bubble, text, meta);
 }
 
 export function appendMessage(role, text, meta = {}) {
@@ -99,11 +113,13 @@ export function appendMessage(role, text, meta = {}) {
   const name = document.createElement('b'); name.textContent = role === 'assistant' ? 'ZEVORA' : 'You'; header.append(name);
   if (role === 'assistant') { const source = document.createElement('span'); source.textContent = sourceLabel(meta); header.append(source); }
   const bubble = document.createElement('div'); bubble.className = 'message-bubble';
-  if (role === 'assistant' && !meta.typing) bubble.insertAdjacentHTML('beforeend', workflowHtml(meta));
-  const body = document.createElement('div'); body.className = 'message-body';
-  if (meta.typing) body.innerHTML = `<span class="typing-copy">${escapeHtml(text)}</span><span class="typing-dots" aria-label="Generating response"><i></i><i></i><i></i></span>`;
-  else body.innerHTML = renderMarkdown(text);
-  bubble.append(body);
+  if (role === 'assistant' && !meta.typing) renderAssistantBubble(bubble, text, meta);
+  else {
+    const body = document.createElement('div'); body.className = 'message-body';
+    if (meta.typing) body.innerHTML = `<span class="typing-copy">${escapeHtml(text)}</span><span class="typing-dots" aria-label="Generating response"><i></i><i></i><i></i></span>`;
+    else body.innerHTML = renderMarkdown(text);
+    bubble.append(body);
+  }
   if (meta.error) bubble.insertAdjacentHTML('beforeend', fallbackTraceHtml(meta.fallback_trace));
   const facts = [];
   if (meta.tools?.length) facts.push(meta.tools.join(', '));
@@ -112,7 +128,6 @@ export function appendMessage(role, text, meta = {}) {
   if (meta.attachments?.length) facts.push(`${meta.attachments.length} attachment(s)`);
   if (facts.length) { const info = document.createElement('small'); info.className = 'meta technical-text'; info.textContent = facts.join(' · '); bubble.append(info); }
   if (meta.retry) { const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'retry-message'; retry.textContent = 'Try again'; retry.onclick = meta.retry; bubble.append(retry); }
-  if (role === 'assistant') appendToolbar(bubble, text, meta);
   content.append(header, bubble); message.append(avatar, content);
   message.setTypingStatus = label => { const node = message.querySelector('.typing-copy'); if (node) node.textContent = label; };
   $('messages').append(message); $('messages').scrollTop = $('messages').scrollHeight;

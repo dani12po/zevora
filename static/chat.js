@@ -1,5 +1,5 @@
-import {$, api, emptyState, escapeHtml, fmtBytes, navigate, setMessages, state, stateIndicator, userErrorMessage} from './core.js?v=20260818-7';
-import {appendMessage, configureMessageActions, newChat, refreshSidebarChats} from './chats.js?v=20260818-7';
+import {$, api, emptyState, escapeHtml, fmtBytes, navigate, setMessages, state, stateIndicator, userErrorMessage} from './core.js?v=20260818-8';
+import {appendMessage, configureMessageActions, newChat, refreshSidebarChats, replaceAssistantMessage} from './chats.js?v=20260818-8';
 
 const LIMITS = {image:8_000_000,pdf:12_000_000,text:2_000_000};
 let projectSelectionGeneration = 0;
@@ -68,7 +68,32 @@ function fallbackStatus(data){if(data.reason==='EXACT_CACHE_HIT')return'Complete
 function resizePrompt(){const prompt=$('prompt');prompt.style.height='auto';prompt.style.height=`${Math.min(prompt.scrollHeight,220)}px`;}
 function failureTitle(error){if(error.code==='AI_EXECUTION_ERROR')return'**AI response unavailable**';if(error.code==='PROJECT_REQUIRED')return'**Project folder required**';if(error.code==='ACTION_FAILED')return'**Action failed**';return'**The request could not be completed**';}
 
-configureMessageActions({regenerate: content => send({content, attachments: [], actions: [], retrying: true})});
+export async function regenerateResponse(content, meta, message, originalText) {
+  if (!content || !meta?.chat_id || !meta?.message_id || !message || state.isSending) return;
+  if (!state.gatewayReady && !await checkGateway()) { $('route-status').textContent = 'Gateway offline'; return; }
+  state.isSending = true; syncComposerState();
+  const bubble = message.querySelector('.message-bubble');
+  if (bubble) bubble.innerHTML = '<div class="message-body"><span class="typing-copy">Regenerating…</span><span class="typing-dots" aria-label="Regenerating response"><i></i><i></i><i></i></span></div>';
+  try {
+    const data = await api(`/api/chats/${encodeURIComponent(meta.chat_id)}/messages/${meta.message_id}/regenerate`, {
+      method: 'POST',
+      body: JSON.stringify({
+        content, mode: $('routing-override')?.value || 'auto',
+        provider: $('routing-provider')?.value || null, model: $('routing-model')?.value || null,
+        attachments: [], actions: [],
+      }),
+    });
+    replaceAssistantMessage(message, data.response, {...meta, ...data, regenerate_content: content});
+    $('route-status').textContent = fallbackStatus(data);
+  } catch (error) {
+    replaceAssistantMessage(message, originalText, meta);
+    $('route-status').textContent = `Regenerate failed - ${userErrorMessage(error)}`;
+  } finally {
+    state.isSending = false; syncComposerState(); $('prompt').focus();
+  }
+}
+
+configureMessageActions({regenerate: regenerateResponse});
 
 export async function send(replay=null){
   const content=replay?.content||$('prompt').value.trim();

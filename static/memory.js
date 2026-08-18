@@ -1,4 +1,4 @@
-import {$, api, badge, escapeHtml, exposeHandlers, pageWrap, setPanel} from './core.js?v=20260818-7';
+import {$, api, badge, escapeHtml, exposeHandlers, pageWrap, setPanel} from './core.js?v=20260818-8';
 
 export async function renderMemory() {
   const memory = await api('/api/memory');

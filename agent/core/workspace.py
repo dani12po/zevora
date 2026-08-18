@@ -122,6 +122,37 @@ class WorkspaceManager:
         with self.connection() as conn:
             cursor=conn.execute('INSERT INTO chat_messages(chat_id,role,content,metadata,created_at) VALUES(?,?,?,?,?)',(chat_id,role,content,json.dumps(metadata or {}),now)); conn.execute('UPDATE chats SET updated_at=? WHERE id=?',(now,chat_id))
             return cursor.lastrowid
+    def update_assistant_message(self,chat_id,message_id,content,metadata=None):
+        """Replace one assistant answer without creating another conversation turn."""
+        now=datetime.now(timezone.utc).isoformat()
+        with self.connection() as conn:
+            row=conn.execute(
+                'SELECT role FROM chat_messages WHERE id=? AND chat_id=?',
+                (message_id,chat_id),
+            ).fetchone()
+            if not row or row['role'] != 'assistant':
+                raise LookupError('Assistant message not found in this chat')
+            conn.execute(
+                'UPDATE chat_messages SET content=?,metadata=? WHERE id=? AND chat_id=?',
+                (content,json.dumps(metadata or {}),message_id,chat_id),
+            )
+            conn.execute('DELETE FROM message_feedback WHERE message_id=?',(message_id,))
+            conn.execute('UPDATE chats SET updated_at=? WHERE id=?',(now,chat_id))
+        return message_id
+    def previous_user_message(self,chat_id,message_id):
+        with self.connection() as conn:
+            target=conn.execute(
+                "SELECT id FROM chat_messages WHERE id=? AND chat_id=? AND role='assistant'",
+                (message_id,chat_id),
+            ).fetchone()
+            if not target:
+                return None
+            row=conn.execute(
+                '''SELECT content FROM chat_messages
+                   WHERE chat_id=? AND role='user' AND id<? ORDER BY id DESC LIMIT 1''',
+                (chat_id,message_id),
+            ).fetchone()
+        return row['content'] if row else None
     def add_exchange(self,chat_id,user_content,assistant_content,metadata=None):
         """Persist a completed exchange atomically so failed requests leave no half-chat."""
         now=datetime.now(timezone.utc).isoformat()

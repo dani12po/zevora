@@ -954,23 +954,44 @@ def rename_chat(chat_id:str,body:ChatRenameRequest):
         if not row: raise HTTPException(404,'Chat not found')
         conn.execute('UPDATE chats SET title=? WHERE id=?',(body.title[:120],chat_id))
     return {'ok':True,'id':chat_id,'title':body.title[:120]}
+_CHAT_METADATA_KEYS = (
+    'route','reason','provider','model','tools','quality_score','attachments',
+    'agent_trace','agentic_log','fallback_trace','estimated_cost','context_hash','project_files',
+    'project_discovery','context_status','flow','execution_ms',
+)
+
+def _chat_metadata(result):
+    return {key:result.get(key) for key in _CHAT_METADATA_KEYS}
+
+async def _complete_chat_turn(chat, content, body):
+    project=workspace_manager.get(chat['project_id']) if chat['project_id'] else None
+    return await task(TaskRequest(
+        prompt=content, project=project['path'] if project else None,
+        mode=body.mode, provider=body.provider, model=body.model,
+        attachments=body.attachments, actions=body.actions,
+    ))
+
 @app.post('/api/chats/{chat_id}/messages')
 async def chat_message(chat_id:str,body:ChatMessageRequest):
     chat=workspace_manager.get_chat(chat_id)
     if not chat: raise HTTPException(404,'Chat not found')
-    project=workspace_manager.get(chat['project_id']) if chat['project_id'] else None
-    result=await task(TaskRequest(
-        prompt=body.content, project=project['path'] if project else None,
-        mode=body.mode, provider=body.provider, model=body.model,
-        attachments=body.attachments, actions=body.actions,
-    ))
-    metadata={key:result.get(key) for key in (
-        'route','reason','provider','model','tools','quality_score','attachments',
-        'agent_trace','agentic_log','fallback_trace','estimated_cost','context_hash','project_files',
-        'project_discovery','context_status','flow','execution_ms',
-    )}
-    message_id=workspace_manager.add_exchange(chat_id,redact(body.content),result['response'],metadata)
+    result=await _complete_chat_turn(chat, body.content, body)
+    message_id=workspace_manager.add_exchange(chat_id,redact(body.content),result['response'],_chat_metadata(result))
     return {**result,'message_id':message_id,'chat_id':chat_id,'feedback':None}
+
+@app.post('/api/chats/{chat_id}/messages/{message_id}/regenerate')
+async def regenerate_message(chat_id:str,message_id:int,body:ChatMessageRequest):
+    chat=workspace_manager.get_chat(chat_id)
+    if not chat: raise HTTPException(404,'Chat not found')
+    content=workspace_manager.previous_user_message(chat_id,message_id)
+    if content is None:
+        raise HTTPException(404,'Original user message not found for this answer')
+    result=await _complete_chat_turn(chat, content, body)
+    workspace_manager.update_assistant_message(
+        chat_id, message_id, result['response'], _chat_metadata(result),
+    )
+    return {**result,'message_id':message_id,'chat_id':chat_id,'feedback':None,'regenerated':True}
+
 @app.post('/api/chats/{chat_id}/messages/{message_id}/feedback')
 def message_feedback(chat_id: str, message_id: int, body: ChatFeedbackRequest):
     chat = workspace_manager.get_chat(chat_id)

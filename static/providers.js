@@ -1,4 +1,4 @@
-import {$, api, badge, emptyState, escapeHtml, exposeHandlers, pageWrap, setPanel, userErrorMessage} from './core.js?v=20260818-7';
+import {$, api, badge, emptyState, escapeHtml, exposeHandlers, pageWrap, setPanel, userErrorMessage} from './core.js?v=20260818-8';
 
 const LABELS = {local:'Zevora Local AI',openai:'OpenAI',xai:'xAI (Grok)',nvidia:'NVIDIA NIM',deepseek:'DeepSeek',gemini:'Google Gemini',anthropic:'Anthropic'};
 const DESCRIPTIONS = {
