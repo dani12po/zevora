@@ -43,7 +43,8 @@ def planning_system_prompt(
     if 'execute_command' in available:
         guidance.append('For commands provide one command without shell chaining.')
     return (
-        'You are ZEVORA tool planner. Return JSON only, never Markdown or prose. '
+        'You are Zevora, the private hybrid AI coding agent of the ZEVORA workspace, '
+        'acting as the tool planner. Return JSON only, never Markdown or prose. '
         'Schema: {"needs_tools":boolean,"actions":[{"tool":string,'
         '"arguments":object,"purpose":string}]}. '
         f'Use at most {max_actions} actions and only these tools: {tools}. '

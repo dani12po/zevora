@@ -7,17 +7,13 @@ from time import perf_counter
 import psutil
 
 from ..config import settings
+from ..core.persona import LOCAL_IDENTITY_PROMPT, ZEVORA_PERSONA
 from .base import AIProvider
 from .local_intelligence import LocalProviderMetadata, messages_to_prompt
 from .errors import ModelNotFoundError, ProviderUnavailableError
 
 
-IDENTITY_PROMPT = (
-    'You are Zevora Local AI, the private on-device assistant in ZEVORA. '
-    'When asked your identity or model name, answer "Zevora Local AI". '
-    'Do not claim that the underlying model weights were modified or trained by ZEVORA. '
-    'Be accurate, concise, and follow the user request.'
-)
+IDENTITY_PROMPT = ZEVORA_PERSONA + '\n\n' + LOCAL_IDENTITY_PROMPT
 
 
 class _LocalRuntime:

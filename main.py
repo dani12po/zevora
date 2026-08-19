@@ -39,6 +39,7 @@ from agent.routing.task_classifier import TaskClassifier
 from agent.security.redaction import redact
 from agent.core.attachments import attachment_context, process_attachment
 from agent.core.execution import AgentAction, ProjectAgentExecutor
+from agent.core.persona import ZEVORA_PERSONA
 from agent.core.planning import parse_action_plan, planning_system_prompt, public_action
 from agent.core.project_index import format_project_context, index_project, project_context
 from agent.core.workspace import WorkspaceManager
@@ -194,7 +195,7 @@ class TaskRequest(BaseModel):
     progress_id: str | None = Field(default=None, max_length=80)
     project: str | None = Field(default=None, max_length=4096)
     system: str = Field(
-        default='You are a safe, concise personal AI agent.', max_length=20_000
+        default=ZEVORA_PERSONA, max_length=20_000
     )
     mode: str = Field(default='auto', max_length=32)
     provider: str | None = Field(default=None, max_length=80)
