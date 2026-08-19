@@ -49,8 +49,17 @@ function setChatOpen(open) {
 
 function setTerminalOpen(open) {
   const terminal = $('workspace-terminal');
+  const toggle = $('workspace-terminal-toggle');
+  const indicator = $('workspace-terminal-collapsed-indicator');
   if (!terminal) return;
   terminal.classList.toggle('is-collapsed', !open);
+  if (toggle) {
+    toggle.textContent = open ? '⌄' : '⌃';
+    toggle.title = open ? 'Collapse terminal' : 'Expand terminal';
+    toggle.setAttribute('aria-label', open ? 'Collapse terminal' : 'Expand terminal');
+    toggle.setAttribute('aria-expanded', String(open));
+  }
+  if (indicator) indicator.classList.toggle('hidden', open);
   localStorage.setItem(KEYS.terminalOpen, String(open));
 }
 
@@ -97,6 +106,7 @@ export function initWorkspaceShell() {
   $('workspace-terminal-toggle')?.addEventListener('click', () => {
     setTerminalOpen($('workspace-terminal')?.classList.contains('is-collapsed'));
   });
+  $('workspace-terminal-collapsed-indicator')?.addEventListener('click', () => setTerminalOpen(true));
   $('chat-dock-resizer')?.addEventListener('pointerdown', event => resizeFromPointer(event, 'chat'));
   $('workspace-terminal-resizer')?.addEventListener('pointerdown', event => resizeFromPointer(event, 'terminal'));
   $('workspace-sidebar-toggle')?.addEventListener('click', () => {

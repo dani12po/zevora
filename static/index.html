@@ -144,9 +144,10 @@
           <div class="workspace-terminal-actions">
             <button id="workspace-terminal-clear" class="icon-action" type="button" title="Clear terminal" aria-label="Clear terminal">⌫</button>
             <button id="workspace-terminal-kill" class="icon-action hidden" type="button" title="Kill command" aria-label="Kill command">■</button>
-            <button id="workspace-terminal-toggle" class="icon-action" type="button" title="Collapse terminal" aria-label="Collapse terminal">⌄</button>
+            <button id="workspace-terminal-toggle" class="icon-action" type="button" title="Collapse terminal" aria-label="Collapse terminal" aria-expanded="true">⌄</button>
           </div>
         </header>
+        <button id="workspace-terminal-collapsed-indicator" class="workspace-terminal-collapsed-indicator hidden" type="button" aria-label="Expand terminal">Collapsed - click to expand</button>
         <div id="workspace-terminal-output" class="workspace-terminal-output" aria-live="polite"><span class="muted-copy">Terminal ready for the selected workspace.</span></div>
         <form id="workspace-terminal-form" class="workspace-terminal-form">
           <span class="terminal-prompt">></span>

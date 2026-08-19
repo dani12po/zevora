@@ -114,8 +114,8 @@ def test_complete_filesystem_surface_is_real_and_workspace_scoped(tmp_path):
         'source': 'src/copy.txt', 'destination': 'archive/copy.txt'
     }, approved=True)
     assert copied.ok and moved.ok and (tmp_path / 'archive' / 'copy.txt').is_file()
-    assert copied.output['bytes'] == 12
-    assert moved.output['bytes'] == 12
+    assert copied.output['bytes'] == 11
+    assert moved.output['bytes'] == 11
 
     escaped = gateway.execute('write_file', {
         'path': '../outside.txt', 'content': 'blocked'
@@ -242,7 +242,7 @@ def test_action_receipt_keeps_markdown_special_characters_in_grounded_preview(tm
     receipt = main._action_receipt(tmp_path, trace)
 
     assert '```text' not in receipt
-    assert '````text' in receipt
+    assert '````zevora-file-preview' in receipt
     assert '*bold* and `inline`' in receipt
     assert '```js' in receipt
 

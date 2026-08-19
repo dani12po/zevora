@@ -53,7 +53,9 @@ export function renderMarkdown(markdown) {
       const marker = fence[1];
       const code = [];
       index += 1;
-      while (index < lines.length && lines[index].trim() !== marker) {
+      while (index < lines.length) {
+        const closing = lines[index].trim();
+        if (closing.length >= marker.length && /^`+$/.test(closing)) break;
         code.push(lines[index]);
         index += 1;
       }

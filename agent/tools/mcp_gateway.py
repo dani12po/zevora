@@ -356,7 +356,7 @@ class LocalMCPGateway:
             if canonical == 'create_file' and path.exists():
                 return ToolResult(False, tool, 'File already exists')
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding='utf-8')
+            path.write_bytes(encoded)
             return ToolResult(True, tool, {
                 'path': path.relative_to(self.root).as_posix(),
                 'bytes': len(encoded),
@@ -380,10 +380,11 @@ class LocalMCPGateway:
             updated = content.replace(old_text, new_text, 1)
             if len(updated.encode('utf-8')) > MAX_TEXT_BYTES:
                 return ToolResult(False, tool, 'File exceeds 1 MB limit')
-            path.write_text(updated, encoding='utf-8')
+            encoded_updated = updated.encode('utf-8')
+            path.write_bytes(encoded_updated)
             return ToolResult(True, tool, {
                 'path': path.relative_to(self.root).as_posix(),
-                'bytes': len(updated.encode('utf-8')),
+                'bytes': len(encoded_updated),
                 'preview': new_text[:400] + ('…' if len(new_text) > 400 else ''),
                 'line_count': updated.count('\n') + 1,
                 'replacements': 1,

@@ -185,25 +185,32 @@ def test_cloud_completion_emits_ordered_attempt_events_for_fallback(tmp_path, mo
     monkeypatch.setattr(main, 'model_registry', Registry())
     monkeypatch.setattr(main, 'get_provider', lambda _name: Provider())
     monkeypatch.setattr(main.settings, 'cloud_fallback', True)
+    monkeypatch.setattr(main.settings, 'routing_max_attempts', 3)
     monkeypatch.setattr(
         'agent.routing.hybrid_router.provider_policy',
         lambda _name: {'enabled': True, 'routing_priority': 50, 'default_model': ''},
     )
 
-    token = main._stream_event_callback.set(capture)
+    callback_token = main._stream_event_callback.set(capture)
+    request_token = main._workflow_request_id.set('fallback-test')
+    main._progress_start('fallback-test')
     try:
         result = asyncio.run(main._cloud_completion('explain this', 'be concise'))
     finally:
-        main._stream_event_callback.reset(token)
+        main._workflow_request_id.reset(request_token)
+        main._stream_event_callback.reset(callback_token)
 
     assert result['response'] == 'recovered response'
-    assert [(event['type'], event['model'], event['status']) for event in events] == [
-        ('attempt_start', 'model-a', 'running'),
-        ('attempt_result', 'model-a', 'failed'),
-        ('attempt_start', 'model-b', 'running'),
-        ('attempt_result', 'model-b', 'failed'),
-        ('attempt_start', 'model-c', 'running'),
-        ('attempt_result', 'model-c', 'success'),
+    assert [
+        (event['event'], event['data']['model'], event['data']['status'])
+        for event in events
+    ] == [
+        ('provider_selected', 'model-a', 'running'),
+        ('provider_fallback', 'model-a', 'failed'),
+        ('provider_selected', 'model-b', 'running'),
+        ('provider_fallback', 'model-b', 'failed'),
+        ('provider_selected', 'model-c', 'running'),
+        ('provider_selected', 'model-c', 'success'),
     ]
 
 

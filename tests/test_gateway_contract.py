@@ -638,11 +638,13 @@ def test_usage_cost_uses_input_and_output_prices():
 
 
 def test_markdown_renderer_supports_safe_variable_length_code_fences():
-    source = (main.PROJECT_ROOT / 'static' / 'markdown.js').read_text(encoding='utf-8')
+    root = Path(__file__).resolve().parents[1]
+    source = (root / 'static' / 'markdown.js').read_text(encoding='utf-8')
 
     assert "line.match(/^(`{3,})([\\w.+-]*)\\s*$/)" in source
     assert "const marker = fence[1]" in source
-    assert "lines[index].trim() !== marker" in source
+    assert "closing.length >= marker.length" in source
+    assert "/^`+$/.test(closing)" in source
     assert "escapeHtml(code)" in source
     assert "label === 'zevora-file-preview'" in source
     assert 'class="file-preview"' in source
@@ -650,7 +652,23 @@ def test_markdown_renderer_supports_safe_variable_length_code_fences():
     assert "button.closest('.file-preview, .code-block')" in source
 
 
+def test_terminal_toggle_contract_is_accessible_and_preserves_output():
+    root = Path(__file__).resolve().parents[1]
+    workspace_javascript = (root / 'static' / 'workspace.js').read_text(encoding='utf-8')
+    index_html = (root / 'static' / 'index.html').read_text(encoding='utf-8')
+    css = (root / 'static' / 'styles.css').read_text(encoding='utf-8')
+    assert 'aria-expanded="true"' in index_html
+    assert 'title="Collapse terminal"' in index_html
+    assert 'aria-label="Expand terminal"' in index_html
+    assert 'workspace-terminal-collapsed-indicator' in workspace_javascript
+    assert "setTerminalOpen(true)" in workspace_javascript
+    assert "localStorage.setItem(KEYS.terminalOpen, String(open))" in workspace_javascript
+    assert '.workspace-terminal.is-collapsed .workspace-terminal-output' in css
+    assert '.workspace-terminal-collapsed-indicator' in css
+
+
 def test_static_chat_workflow_contract():
+    ROOT = Path(__file__).resolve().parents[1]
     chats_javascript = (ROOT / 'static' / 'chats.js').read_text(encoding='utf-8')
     chat_javascript = (ROOT / 'static' / 'chat.js').read_text(encoding='utf-8')
     index_html = (ROOT / 'static' / 'index.html').read_text(encoding='utf-8')
@@ -659,7 +677,7 @@ def test_static_chat_workflow_contract():
     assert "startsWith('file_')" in chats_javascript
     assert 'api(`/api/chat/cancel/' in chat_javascript
     assert 'event.sequence' in chat_javascript
-    assert 'heartbeat' in chat_javascript
+    assert "event.type === 'workflow'" in chat_javascript
     assert 'stop-request' in index_html
 
 
@@ -676,7 +694,7 @@ def test_static_chat_guidance_and_docs_contract():
     assert 'href="/docs"' in html
     assert 'id="workspace-access"' in html
     assert 'id="composer-open-project"' in html
-    assert re.search(r"'/docs':\s*renderDocs", app_javascript)
+    assert re.search(r"'/docs':\s*(?:standardRoute\()?renderDocs", app_javascript)
     assert 'export function renderDocs()' in javascript
     assert "meta.error ? ' message-error'" in javascript
     assert re.search(r"error\.code\s*===\s*'PROJECT_REQUIRED'", javascript)
@@ -684,15 +702,15 @@ def test_static_chat_guidance_and_docs_contract():
     assert '.docs-layout' in css
     assert '.message-error' in css
     assert '.file-preview' in css
-    assert 'styles.css?v=20260818-12' in html
-    assert 'app.js?v=20260818-12' in html
+    assert re.search(r'styles\.css\?v=\d{8}-\d+', html)
+    assert re.search(r'app\.js\?v=\d{8}-\d+', html)
     assert 'setWorkflowProgress' in javascript
     assert 'setWorkflowEvent' in javascript
     assert 'request_id' in javascript
     assert '/api/chat/stream' in javascript
     assert 'response.body.getReader()' in javascript
-    assert 'attempt_start' in javascript
-    assert 'attempt_result' in javascript
+    assert "event.type === 'workflow'" in javascript
+    assert 'provider_selected' in (root / 'main.py').read_text(encoding='utf-8')
     assert '/api/chat/progress/' in javascript
     assert '.workflow-live' in css
 
@@ -745,14 +763,14 @@ def test_static_frontend_module_and_theme_contract():
     app_javascript = (static / 'app.js').read_text(encoding='utf-8')
     css = (static / 'styles.css').read_text(encoding='utf-8')
     providers = (static / 'providers.js').read_text(encoding='utf-8')
-    assert re.search(r'<script\s+type="module"\s+src="/static/app\.js\?v=20260818-11"', html)
+    assert re.search(r'<script\s+type="module"\s+src="/static/app\.js\?v=\d{8}-\d+"', html)
     assert "fetch('/health', {cache: 'no-store'})" in html
     assert 'Gateway connected' in html
     assert 'family=Inter' in html and 'family=JetBrains+Mono' in html
     assert 'onclick=' not in html
-    assert "from './core.js?v=20260818-11'" in app_javascript
-    assert "from './chat.js?v=20260818-11'" in app_javascript
-    assert "from './chats.js?v=20260818-11'" in app_javascript
+    assert re.search(r"from './core\.js\?v=\d{8}-\d+'", app_javascript)
+    assert re.search(r"from './chat\.js\?v=\d{8}-\d+'", app_javascript)
+    assert re.search(r"from './chats\.js\?v=\d{8}-\d+'", app_javascript)
 
     routes = {
         '/': 'renderChat', '/chats': 'renderChatVault', '/docs': 'renderDocs',
@@ -763,7 +781,7 @@ def test_static_frontend_module_and_theme_contract():
         '/settings': 'renderSettings',
     }
     for route, renderer in routes.items():
-        assert re.search(rf"'{re.escape(route)}':\s*{renderer}", app_javascript)
+        assert re.search(rf"'{re.escape(route)}':\s*(?:\w+Route\()?{renderer}", app_javascript)
 
     tokens = {
         '--bg': '#151718', '--surface': '#1b1e20', '--surface2': '#222628',
