@@ -1,108 +1,145 @@
-import {$, api, state} from './core.js?v=20260818-11';
+import {$, api} from './core.js?v=20260818-11';
 
-let activeSession = null;
-let pollTimer = null;
-let eventCursor = 0;
+const tabs = new Map();
+let activeTabId = null;
+let tabSequence = 0;
 
-function outputNode() {
-  return $('workspace-terminal-output');
+function activeTab() { return tabs.get(activeTabId) || null; }
+function outputNode() { return $('workspace-terminal-output'); }
+
+function commandTitle(command) {
+  const first = command.trim().split(/\s+/, 1)[0] || 'Terminal';
+  return first.length > 18 ? `${first.slice(0, 17)}...` : first;
 }
 
-function appendOutput(event) {
+function createTab() {
+  const id = `local-${++tabSequence}`;
+  tabs.set(id, {id, title:'Terminal', sessionId:null, cursor:0, status:'idle', output:[], timer:null});
+  activateTab(id);
+}
+
+function renderTabs() {
+  const host = $('workspace-terminal-tabs');
+  if (!host) return;
+  host.innerHTML = '';
+  for (const tab of tabs.values()) {
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = `terminal-tab${tab.id === activeTabId ? ' active' : ''}`;
+    button.textContent = tab.title; button.title = tab.title;
+    button.onclick = () => activateTab(tab.id);
+    host.append(button);
+  }
+}
+
+function renderActiveOutput() {
+  const tab = activeTab();
   const output = outputNode();
-  if (!output || event.type !== 'output') return;
-  const line = document.createElement('span');
-  line.className = `terminal-output-${event.stream || 'system'}`;
-  line.textContent = event.data || '';
-  output.append(line);
+  if (!tab || !output) return;
+  output.innerHTML = '';
+  if (!tab.output.length) output.innerHTML = '<span class="muted-copy">Terminal ready for the selected workspace.</span>';
+  for (const event of tab.output) {
+    const node = document.createElement(event.type === 'status' ? 'div' : 'span');
+    node.className = event.type === 'status' ? 'terminal-status' : `terminal-output-${event.stream || 'system'}`;
+    node.textContent = event.data || '';
+    output.append(node);
+  }
   output.scrollTop = output.scrollHeight;
+  syncControls();
 }
 
-function setStatus(text) {
-  const output = outputNode();
-  if (!output) return;
-  const status = document.createElement('div');
-  status.className = 'terminal-status';
-  status.textContent = text;
-  output.append(status);
-  output.scrollTop = output.scrollHeight;
+function activateTab(id) {
+  if (!tabs.has(id)) return;
+  activeTabId = id;
+  renderTabs(); renderActiveOutput();
+  $('workspace-terminal-command')?.focus();
 }
 
-function setRunning(running) {
+function appendEvent(tab, event) {
+  tab.output.push(event);
+  if (tab.output.length > 1000) tab.output.splice(0, tab.output.length - 1000);
+  if (tab.id === activeTabId) renderActiveOutput();
+}
+
+function setStatus(tab, text) { appendEvent(tab, {type:'status', data:text}); }
+
+function syncControls() {
+  const tab = activeTab();
+  const running = tab?.status === 'running';
   $('workspace-terminal-kill')?.classList.toggle('hidden', !running);
   const input = $('workspace-terminal-command');
   if (input) input.disabled = running;
 }
 
-async function pollSession() {
-  if (!activeSession) return;
+async function pollSession(tabId) {
+  const tab = tabs.get(tabId);
+  if (!tab?.sessionId || tab.status !== 'running') return;
   try {
-    const data = await api(`/api/terminal/sessions/${encodeURIComponent(activeSession)}?after=${eventCursor}`);
-    for (const event of data.events || []) appendOutput(event);
-    eventCursor = data.next || eventCursor;
+    const data = await api(`/api/terminal/sessions/${encodeURIComponent(tab.sessionId)}?after=${tab.cursor}`);
+    for (const event of data.events || []) if (event.type === 'output') appendEvent(tab, event);
+    tab.cursor = data.next || tab.cursor;
     if (data.status !== 'running') {
-      setRunning(false);
-      setStatus(`Command ${data.status}${data.exit_code == null ? '' : ` (exit ${data.exit_code})`}`);
-      activeSession = null;
+      tab.status = data.status;
+      setStatus(tab, `Command ${data.status}${data.exit_code == null ? '' : ` (exit ${data.exit_code})`}`);
+      syncControls(); renderTabs();
       return;
     }
-    pollTimer = window.setTimeout(pollSession, 250);
+    tab.timer = window.setTimeout(() => pollSession(tabId), 250);
   } catch (error) {
-    setRunning(false);
-    setStatus(`Terminal error: ${error.message}`);
-    activeSession = null;
+    tab.status = 'failed';
+    setStatus(tab, `Terminal error: ${error.message}`);
+    syncControls();
   }
 }
 
 async function runCommand(event) {
   event.preventDefault();
-  if (activeSession) return;
+  const tab = activeTab();
   const projectId = $('project-select')?.value;
   const input = $('workspace-terminal-command');
   const command = input?.value.trim();
+  if (!tab || tab.status === 'running') return;
   if (!projectId || !command) {
-    setStatus(projectId ? 'Enter a command.' : 'Open a project before running commands.');
+    setStatus(tab, projectId ? 'Enter a command.' : 'Open a project before running commands.');
     return;
   }
-  const output = outputNode();
-  if (output) output.innerHTML = '';
+  tab.output = []; tab.title = commandTitle(command); renderTabs();
   try {
     const data = await api('/api/terminal/sessions', {
-      method: 'POST',
-      body: JSON.stringify({project_id: Number(projectId), command}),
+      method:'POST', body:JSON.stringify({project_id:Number(projectId), command}),
     });
-    activeSession = data.session_id;
-    eventCursor = 0;
-    setRunning(true);
-    appendOutput({type: 'output', stream: 'command', data: `> ${command}\n`});
-    input.value = '';
-    pollSession();
+    tab.sessionId = data.session_id; tab.cursor = 0; tab.status = 'running';
+    appendEvent(tab, {type:'output', stream:'command', data:`> ${command}\n`});
+    input.value = ''; syncControls(); pollSession(tab.id);
   } catch (error) {
-    setRunning(false);
-    setStatus(`Command rejected: ${error.message}`);
+    tab.status = 'failed';
+    setStatus(tab, `Command rejected: ${error.message}`);
   }
 }
 
 async function killCommand() {
-  if (!activeSession) return;
-  try {
-    await api(`/api/terminal/sessions/${encodeURIComponent(activeSession)}/kill`, {method: 'POST'});
-  } catch (error) {
-    setStatus(`Unable to stop command: ${error.message}`);
-  }
+  const tab = activeTab();
+  if (!tab?.sessionId || tab.status !== 'running') return;
+  try { await api(`/api/terminal/sessions/${encodeURIComponent(tab.sessionId)}/kill`, {method:'POST'}); }
+  catch (error) { setStatus(tab, `Unable to stop command: ${error.message}`); }
 }
 
-function clearTerminal() {
-  if (pollTimer) window.clearTimeout(pollTimer);
-  pollTimer = null;
-  activeSession = null;
-  eventCursor = 0;
-  setRunning(false);
-  const output = outputNode();
-  if (output) output.innerHTML = '<span class="muted-copy">Terminal cleared.</span>';
+async function clearTerminal() {
+  const tab = activeTab();
+  if (!tab) return;
+  if (tab.timer) window.clearTimeout(tab.timer);
+  tab.timer = null;
+  tab.output = [{type:'status', data:'Terminal cleared.'}];
+  if (tab.status !== 'running') {
+    if (tab.sessionId) await api(`/api/terminal/sessions/${encodeURIComponent(tab.sessionId)}`, {method:'DELETE'}).catch(() => {});
+    tab.sessionId = null; tab.cursor = 0; tab.status = 'idle'; tab.title = 'Terminal';
+  }
+  renderTabs(); renderActiveOutput();
+  if (tab.status === 'running') { tab.timer = window.setTimeout(() => pollSession(tab.id), 250); }
 }
 
 export function initTerminalWorkspace() {
+  createTab();
+  $('workspace-terminal-new')?.addEventListener('click', createTab);
   $('workspace-terminal-form')?.addEventListener('submit', runCommand);
   $('workspace-terminal-kill')?.addEventListener('click', killCommand);
   $('workspace-terminal-clear')?.addEventListener('click', clearTerminal);

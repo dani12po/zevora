@@ -52,6 +52,17 @@ The final assistant response is separate from Agent activity. Persisted assistan
 metadata includes the final workflow snapshot, provider attribution, grounded file
 receipts, and verification results for historical inspection.
 
+## Coding Workspace Terminal
+
+The coding workspace terminal supports multiple independent frontend tabs backed by
+bounded `TerminalSessionManager` sessions. Each tab owns its command, event cursor,
+output buffer, running state, and kill/clear controls so concurrent output is never
+mixed between tabs.
+
+Problems, Debug Console, and Ports panels are future work. They require real
+language diagnostics, debugger integration, and port discovery/forwarding
+subsystems respectively; placeholder panels are intentionally not exposed.
+
 ## Agent Flow Contract
 
 `POST /api/task` preserves the existing response fields and adds `project_discovery`,

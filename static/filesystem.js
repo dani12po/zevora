@@ -4,6 +4,8 @@ const READ_ONLY_EXTENSIONS = new Set(['png','jpg','jpeg','gif','webp','ico','pdf
 let activePath = '';
 let savedContent = '';
 let activeRow = null;
+let revealNextOpen = false;
+let activeReveal = null;
 
 export async function renderFilesystem() {
   const projectId = $('project-select').value;
@@ -92,6 +94,62 @@ function lineNumbers(content) {
   return Array.from({length: count}, (_, index) => index + 1).join('\n');
 }
 
+function highlightedContent(content, path) {
+  const escaped = escapeHtml(content);
+  const extension = path.split('.').pop().toLowerCase();
+  if (!['py','js','ts','json','css','html','sh','sql'].includes(extension)) return escaped;
+  return escaped
+    .replace(/(".*?"|'.*?')/g, '<span class="syntax-string">$1</span>')
+    .replace(/(^|\n)(\s*(?:#|\/\/).*)/g, '$1<span class="syntax-comment">$2</span>')
+    .replace(/\b(const|let|var|function|return|if|else|for|while|class|def|import|from|async|await|try|except|true|false|null|None)\b/g, '<span class="syntax-keyword">$1</span>');
+}
+
+function syncHighlight() {
+  const editor = $('fs-editor');
+  const highlight = $('fs-highlight');
+  if (editor && highlight) highlight.innerHTML = highlightedContent(editor.value, activePath) + '\n';
+}
+
+function stopReveal() {
+  activeReveal?.skip();
+  activeReveal = null;
+}
+
+function revealEditorContent(content) {
+  const editor = $('fs-editor');
+  if (!editor || editor.readOnly || editor.value !== savedContent) return;
+  stopReveal();
+  const lines = content.split('\n');
+  const status = $('fs-editor-status');
+  let visible = 0;
+  let timer = null;
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    if (timer) window.clearTimeout(timer);
+    editor.value = content;
+    editor.readOnly = false;
+    savedContent = content;
+    syncDirtyState(); syncHighlight();
+    status.textContent = `Saved ${content.length} bytes`;
+    activeReveal = null;
+  };
+  const step = () => {
+    if (finished) return;
+    visible = Math.min(lines.length, visible + Math.max(1, Math.ceil(lines.length / 100)));
+    editor.value = lines.slice(0, visible).join('\n');
+    syncDirtyState(); syncHighlight();
+    if (visible >= lines.length) finish();
+    else timer = window.setTimeout(step, 28);
+  };
+  activeReveal = {skip: finish};
+  editor.readOnly = true;
+  editor.addEventListener('click', finish, {once:true});
+  status.textContent = 'ZEVORA is writing...';
+  step();
+}
+
 function syncDirtyState() {
   const editor = $('fs-editor');
   const dirty = Boolean(editor && !editor.readOnly && editor.value !== savedContent);
@@ -115,15 +173,23 @@ function renderEditor(path, data) {
     ${warning ? `<div class="warning-text fs-editor-warning">${escapeHtml(warning)}</div>` : ''}
     <div class="fs-editor-body">
       <pre id="fs-lines" class="fs-editor-lines" aria-hidden="true">${lineNumbers(data.content)}</pre>
-      <textarea id="fs-editor" class="fs-editor-input" spellcheck="false" aria-label="File editor" ${readOnly ? 'readonly' : ''}></textarea>
+      <div class="fs-editor-code">
+        <pre id="fs-highlight" class="fs-editor-highlight" aria-hidden="true"></pre>
+        <textarea id="fs-editor" class="fs-editor-input" spellcheck="false" aria-label="File editor" ${readOnly ? 'readonly' : ''}></textarea>
+      </div>
     </div>
     <footer id="fs-editor-status" class="fs-editor-status">${readOnly ? 'Read only' : 'Ready'}</footer>
   </section>`;
   const editor = $('fs-editor');
   editor.value = data.content;
   savedContent = data.content;
-  editor.addEventListener('input', syncDirtyState);
-  editor.addEventListener('scroll', () => { $('fs-lines').scrollTop = editor.scrollTop; });
+  syncHighlight();
+  editor.addEventListener('input', () => { stopReveal(); syncDirtyState(); syncHighlight(); });
+  editor.addEventListener('scroll', () => {
+    $('fs-lines').scrollTop = editor.scrollTop;
+    const highlight = $('fs-highlight');
+    if (highlight) { highlight.scrollTop = editor.scrollTop; highlight.scrollLeft = editor.scrollLeft; }
+  });
   editor.addEventListener('keydown', event => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
       event.preventDefault();
@@ -167,7 +233,8 @@ function workflowChangedFiles(detail = {}) {
 
 window.addEventListener('zevora:workflow-complete', event => {
   if (location.pathname !== '/filesystem' || !workflowChangedFiles(event.detail) || hasDirtyEditor()) return;
-  renderFilesystem().catch(() => {});
+  revealNextOpen = Boolean(activePath);
+  renderFilesystem().catch(() => { revealNextOpen = false; });
 });
 
 async function openFile(path, row, {force=false} = {}) {
@@ -184,7 +251,10 @@ async function openFile(path, row, {force=false} = {}) {
   preview.innerHTML = loadingState('Loading file...', 'local');
   try {
     const data = await api(`/api/filesystem/file?project_id=${state.fsProjectId}&path=${encodeURIComponent(path)}`);
+    const shouldReveal = revealNextOpen;
+    revealNextOpen = false;
     renderEditor(path, data);
+    if (shouldReveal) revealEditorContent(data.content);
   } catch (error) {
     preview.innerHTML = `<span class="error-text">${escapeHtml(userErrorMessage(error, 'File could not be opened.'))}</span>`;
   }

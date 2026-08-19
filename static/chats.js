@@ -1,5 +1,7 @@
 import {$, api, escapeHtml, exposeHandlers, loadingState, navigate, pageWrap, setMessages, setPanel, setSidebarOpen, state, userErrorMessage} from './core.js?v=20260818-11';
 import {renderMarkdown} from './markdown.js?v=20260818-12';
+import {cancelReveals, revealText} from './chat-reveal.js?v=20260819-1';
+export {cancelReveals, revealText};
 
 let renamingChatId = null;
 let regenerateMessage = null;
@@ -136,12 +138,17 @@ function appendToolbar(bubble, text, meta) {
 function renderAssistantBubble(bubble, text, meta) {
   bubble.innerHTML = '';
   bubble.insertAdjacentHTML('beforeend', workflowHtml(meta));
-  const body = document.createElement('div'); body.className = 'message-body'; body.innerHTML = renderMarkdown(text);
-  bubble.append(body);
-  appendToolbar(bubble, text, meta);
+  const finish = () => appendToolbar(bubble, text, meta);
+  if (meta.reveal) revealText(bubble, text, {onComplete: finish});
+  else {
+    const body = document.createElement('div'); body.className = 'message-body'; body.innerHTML = renderMarkdown(text);
+    bubble.append(body);
+    finish();
+  }
 }
 
 export function replaceAssistantMessage(message, text, meta = {}) {
+  cancelReveals();
   const bubble = message?.querySelector('.message-bubble');
   if (!bubble) return;
   renderAssistantBubble(bubble, text, meta);

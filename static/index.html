@@ -140,8 +140,9 @@
       <div class="workspace-terminal" id="workspace-terminal">
         <div class="workspace-terminal-resizer" id="workspace-terminal-resizer" title="Resize terminal" aria-hidden="true"></div>
         <header class="workspace-terminal-header">
-          <b>Terminal</b>
+          <div class="workspace-terminal-heading"><b>Terminal</b><div id="workspace-terminal-tabs" class="workspace-terminal-tabs" role="tablist" aria-label="Terminal sessions"></div></div>
           <div class="workspace-terminal-actions">
+            <button id="workspace-terminal-new" class="icon-action" type="button" title="New terminal" aria-label="New terminal">+</button>
             <button id="workspace-terminal-clear" class="icon-action" type="button" title="Clear terminal" aria-label="Clear terminal">⌫</button>
             <button id="workspace-terminal-kill" class="icon-action hidden" type="button" title="Kill command" aria-label="Kill command">■</button>
             <button id="workspace-terminal-toggle" class="icon-action" type="button" title="Collapse terminal" aria-label="Collapse terminal" aria-expanded="true">⌄</button>
@@ -339,6 +340,6 @@
     });
 })();
 </script>
-<script type="module" src="/static/app.js?v=20260818-12"></script>
+<script type="module" src="/static/app.js?v=20260819-1"></script>
 </body>
 </html>

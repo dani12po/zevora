@@ -1,5 +1,5 @@
 import {$, api, emptyState, escapeHtml, fmtBytes, navigate, setMessages, state, stateIndicator, userErrorMessage} from './core.js?v=20260818-11';
-import {appendMessage, configureMessageActions, newChat, refreshSidebarChats, replaceAssistantMessage} from './chats.js?v=20260818-12';
+import {appendMessage, cancelReveals, configureMessageActions, newChat, refreshSidebarChats, replaceAssistantMessage} from './chats.js?v=20260818-12';
 
 const LIMITS = {image:8_000_000,pdf:12_000_000,text:2_000_000};
 let projectSelectionGeneration = 0;
@@ -167,7 +167,7 @@ export async function regenerateResponse(content, meta, message, originalText) {
         attachments: [], actions: [],
       }),
     });
-    replaceAssistantMessage(message, data.response, {...meta, ...data, regenerate_content: content});
+    replaceAssistantMessage(message, data.response, {...meta, ...data, reveal: true, regenerate_content: content});
     $('route-status').textContent = fallbackStatus(data);
   } catch (error) {
     replaceAssistantMessage(message, originalText, meta);
@@ -198,6 +198,7 @@ async function routeCodingPrompt(content) {
 export async function send(replay=null){
   const content=replay?.content||$('prompt').value.trim();
   if(!content||state.isSending)return;
+  cancelReveals();
   await routeCodingPrompt(content);
   if(!state.gatewayReady&&!await checkGateway()){$('route-status').textContent='Gateway offline';return;}
   const request=replay||{content,attachments:state.pendingAttachments.map(({name,media_type,data_base64})=>({name,media_type,data_base64})),actions:state.pendingActions.map(action=>({...action}))};
@@ -221,7 +222,7 @@ export async function send(replay=null){
       stopProgress=watchProgress(requestId,waiting);
       data=await api('/api/chat',{method:'POST',body:JSON.stringify(payload)});
     }
-    stopProgress();state.activeChat=data.conversation_id;replaceAssistantMessage(waiting,data.response,{...data,regenerate_content:content});waiting.classList.remove('is-typing');
+    stopProgress();state.activeChat=data.conversation_id;replaceAssistantMessage(waiting,data.response,{...data,reveal:true,regenerate_content:content});waiting.classList.remove('is-typing');
     state.pendingAttachments=[];state.pendingActions=[];state.pendingApprovalRequest=null;renderComposerItems();
     $('route-status').textContent=data.reason==='TOOLS_EXECUTED'?'Completed - changes were written to the selected folder':fallbackStatus(data);
     window.dispatchEvent(new CustomEvent('zevora:workflow-complete', {detail:data}));
