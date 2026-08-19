@@ -45,6 +45,10 @@ class AdaptiveHybridRouter:
 
     def __init__(self, classifier=None):
         self.classifier = classifier or TaskClassifier()
+        # One cursor per eligible provider pool.  This is intentionally kept on
+        # the long-lived router so cold providers receive a first attempt across
+        # requests, rather than being reset on every routing decision.
+        self._exploration_cursors: dict[tuple[bool, tuple[str, ...]], int] = {}
 
     @staticmethod
     def _context_window(model: dict) -> int | None:
@@ -119,6 +123,29 @@ class AdaptiveHybridRouter:
         latency_score = 1.0 / (1.0 + latency / 5000.0)
         return success * .65 + quality * .25 + latency_score * .10
 
+    @staticmethod
+    def _priority_score(policy: dict) -> float:
+        """Convert the UI's 0..999 priority into a routing score contribution."""
+        try:
+            priority = float(policy.get('routing_priority', 50))
+        except (TypeError, ValueError):
+            priority = 50.0
+        # UI priorities conventionally use 0..100 (for example 90 and 80).
+        # Values above 100 remain valid but saturate instead of overpowering
+        # capability and observed reliability.
+        return max(0.0, min(priority / 100.0, 1.0))
+
+    def _next_exploration_provider(
+        self, candidates: list[dict], local: bool, advance: bool
+    ) -> str:
+        providers = tuple(sorted({item['_routing_provider'] for item in candidates}))
+        key = (local, providers)
+        cursor = self._exploration_cursors.get(key, 0)
+        provider = providers[cursor % len(providers)]
+        if advance:
+            self._exploration_cursors[key] = cursor + 1
+        return provider
+
     def _select_model(
         self,
         models: list[dict],
@@ -129,13 +156,10 @@ class AdaptiveHybridRouter:
         performance: dict | None = None,
         context_tokens: int = 0,
         expected_output_tokens: int = 512,
+        advance_exploration: bool = False,
     ) -> dict | None:
         candidates = []
         adaptive = performance or {}
-        use_history = any(
-            item.get('attempts', 0) >= self.MIN_ADAPTIVE_SAMPLES
-            for item in adaptive.values()
-        )
         for model in models:
             provider = str(model.get('provider') or '').lower()
             if (provider == 'local') != local:
@@ -158,10 +182,16 @@ class AdaptiveHybridRouter:
                 model, context_tokens, expected_output_tokens
             )
             cost_rank = estimated_cost if estimated_cost is not None else float('inf')
-            confidence = (
-                self._adaptive_confidence(model, adaptive) if use_history else .5
+            history = adaptive.get((provider, model_id), {})
+            attempts = int(history.get('attempts', 0) or 0)
+            confidence = self._adaptive_confidence(model, adaptive)
+            priority_score = self._priority_score(policy)
+            # Reliability is strongest once sampled; capability remains a
+            # material factor and UI priority is deliberately strong enough to
+            # beat a small cost gap. Cost is a tie-breaker, not a provider lock.
+            routing_score = (
+                confidence * .50 + capability_score * .30 + priority_score * .20
             )
-            routing_score = confidence * .60 + capability_score * .40
             enriched = {
                 **model,
                 '_routing_capability_score': capability_score,
@@ -169,19 +199,50 @@ class AdaptiveHybridRouter:
                 '_routing_score': routing_score,
                 '_routing_estimated_cost': estimated_cost,
                 '_routing_context_tokens': context_tokens,
+                '_routing_provider': provider,
+                '_routing_attempts': attempts,
+                '_routing_preferred': preferred,
+                '_routing_cost_rank': cost_rank,
             }
-            if use_history:
-                rank = (
-                    not preferred, -routing_score, cost_rank,
-                    -policy['routing_priority'], enriched,
-                )
-            else:
-                rank = (
-                    not preferred, cost_rank, -capability_score,
-                    -policy['routing_priority'], enriched,
-                )
-            candidates.append(rank)
-        return min(candidates, key=lambda item: item[:-1])[-1] if candidates else None
+            candidates.append(enriched)
+        if not candidates:
+            return None
+
+        # A configured default is an explicit model override, so preserve its
+        # established contract ahead of automated provider exploration.
+        preferred_candidates = [
+            item for item in candidates if item['_routing_preferred']
+        ]
+        if preferred_candidates:
+            candidates = preferred_candidates
+
+        # Every healthy, configured provider gets MIN_ADAPTIVE_SAMPLES before
+        # cost/reliability can dominate. This avoids a free model permanently
+        # starving the others of the history needed for adaptive routing.
+        unexplored = [
+            item for item in candidates
+            if item['_routing_attempts'] < self.MIN_ADAPTIVE_SAMPLES
+        ]
+        pool = unexplored or candidates
+        if unexplored:
+            selected_provider = self._next_exploration_provider(
+                unexplored, local, advance_exploration
+            )
+            pool = [
+                item for item in unexplored
+                if item['_routing_provider'] == selected_provider
+            ]
+
+        return min(
+            pool,
+            key=lambda item: (
+                not item['_routing_preferred'],
+                -item['_routing_score'],
+                item['_routing_cost_rank'],
+                item['_routing_provider'],
+                item.get('model_id', ''),
+            ),
+        )
 
     def _rank_pool(
         self,
@@ -204,6 +265,7 @@ class AdaptiveHybridRouter:
                 performance,
                 context_tokens,
                 expected_output_tokens,
+                advance_exploration=not ranked,
             )
             if not model:
                 return ranked

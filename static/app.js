@@ -1,20 +1,20 @@
-import {$, api, navigate, registerRoutes, render, setSidebarOpen} from './core.js?v=20260818-11';
-import {initWorkspaceShell, enterCodingWorkspace, leaveCodingWorkspace} from './workspace.js?v=20260818-12';
-import {initTerminalWorkspace} from './terminal-workspace.js?v=20260818-12';
-import {checkGateway, createProject, loadProject, pickProject, refreshProjects, renderChat, renderComposerItems, syncWorkspaceAccess, wireChatEvents} from './chat.js?v=20260818-12';
-import {confirmRenameChat, newChat, refreshSidebarChats, renderChatVault} from './chats.js?v=20260818-12';
-import {wireMarkdownActions} from './markdown.js?v=20260818-12';
-import {renderDocs} from './docs.js?v=20260818-10';
-import {renderProviders} from './providers.js?v=20260818-10';
-import {renderLocalAI} from './local-ai.js?v=20260818-10';
-import {renderModelRouter} from './model-router.js?v=20260818-10';
-import {renderMCP} from './mcp.js?v=20260818-10';
-import {configureTerminal, renderTerminal} from './terminal.js?v=20260818-10';
-import {renderFilesystem} from './filesystem.js?v=20260818-10';
-import {renderMemory} from './memory.js?v=20260818-10';
-import {renderCache} from './cache.js?v=20260818-10';
-import {renderUsage} from './usage.js?v=20260818-10';
-import {renderSettings} from './settings.js?v=20260818-10';
+import {$, api, navigate, registerRoutes, render, setSidebarOpen} from './core.js?v=20260819-2';
+import {initWorkspaceShell, enterCodingWorkspace, leaveCodingWorkspace} from './workspace.js?v=20260819-2';
+import {initTerminalWorkspace} from './terminal-workspace.js?v=20260819-2';
+import {checkGateway, createProject, loadProject, pickProject, refreshProjects, renderChat, renderComposerItems, syncWorkspaceAccess, wireChatEvents} from './chat.js?v=20260819-2';
+import {confirmRenameChat, newChat, refreshSidebarChats, renderChatVault} from './chats.js?v=20260819-2';
+import {wireMarkdownActions} from './markdown.js?v=20260819-2';
+import {renderDocs} from './docs.js?v=20260819-2';
+import {renderProviders} from './providers.js?v=20260819-2';
+import {renderLocalAI} from './local-ai.js?v=20260819-2';
+import {renderModelRouter} from './model-router.js?v=20260819-2';
+import {renderMCP} from './mcp.js?v=20260819-2';
+import {configureTerminal, renderTerminal} from './terminal.js?v=20260819-2';
+import {renderFilesystem} from './filesystem.js?v=20260819-2';
+import {renderMemory} from './memory.js?v=20260819-2';
+import {renderCache} from './cache.js?v=20260819-2';
+import {renderUsage} from './usage.js?v=20260819-2';
+import {renderSettings} from './settings.js?v=20260819-2';
 
 const codingRoute = handler => async () => {
   enterCodingWorkspace();

@@ -1,5 +1,6 @@
 import asyncio
 import importlib
+import logging
 import threading
 from pathlib import Path
 from time import perf_counter
@@ -14,6 +15,20 @@ from .errors import ModelNotFoundError, ProviderUnavailableError
 
 
 IDENTITY_PROMPT = ZEVORA_PERSONA + '\n\n' + LOCAL_IDENTITY_PROMPT
+logger = logging.getLogger(__name__)
+
+
+def _local_failure_reason(error: Exception) -> str:
+    message = str(error).lower()
+    if isinstance(error, ModelNotFoundError) or 'no such file' in message:
+        return 'model_file_missing'
+    if isinstance(error, MemoryError) or any(token in message for token in ('out of memory', 'oom', 'bad_alloc')):
+        return 'out_of_memory'
+    if 'timeout' in message or 'timed out' in message:
+        return 'timeout'
+    if isinstance(error, ImportError) or 'no module named' in message:
+        return 'runtime_unavailable'
+    return 'runtime_error'
 
 
 class _LocalRuntime:
@@ -28,6 +43,7 @@ class _LocalRuntime:
         self._loaded_rss_mb = 0
         self._load_delta_mb = 0
         self._load_seconds = 0.0
+        self._last_generation_seconds = 0.0
 
     def reset(self) -> None:
         """Release the Python model reference; primarily useful for tests/reloads."""
@@ -38,6 +54,7 @@ class _LocalRuntime:
             self._loaded_rss_mb = 0
             self._load_delta_mb = 0
             self._load_seconds = 0.0
+            self._last_generation_seconds = 0.0
 
     def _load(self):
         model_path = settings.local_model_file
@@ -47,12 +64,18 @@ class _LocalRuntime:
             if self._model is not None and self._loaded_path == str(model_path):
                 return self._model
             if not settings.local_model_enabled:
+                logger.warning('local_model_load_failed reason=disabled')
                 raise ProviderUnavailableError('local model is disabled')
             if settings.local_model_runtime.lower() != 'llamacpp':
+                logger.warning(
+                    'local_model_load_failed reason=unsupported_runtime runtime=%s',
+                    settings.local_model_runtime,
+                )
                 raise ProviderUnavailableError(
                     f'unsupported local runtime: {settings.local_model_runtime}'
                 )
             if not model_path.is_file():
+                logger.warning('local_model_load_failed reason=model_file_missing path=%s', model_path)
                 raise ModelNotFoundError(f'local GGUF not found: {model_path}')
 
             process = psutil.Process()
@@ -73,6 +96,10 @@ class _LocalRuntime:
                 raise
             except Exception as error:
                 self._loading_error = str(error)
+                logger.exception(
+                    'local_model_load_failed reason=%s path=%s runtime=llamacpp',
+                    _local_failure_reason(error), model_path,
+                )
                 raise ProviderUnavailableError(
                     f'local llama.cpp runtime could not load: {error}'
                 ) from error
@@ -84,6 +111,10 @@ class _LocalRuntime:
             self._loaded_rss_mb = rss_after // 1024 // 1024
             self._load_delta_mb = max(0, rss_after - rss_before) // 1024 // 1024
             self._load_seconds = round(perf_counter() - started, 3)
+            logger.info(
+                'local_model_loaded path=%s load_seconds=%.3f rss_delta_mb=%s',
+                model_path, self._load_seconds, self._load_delta_mb,
+            )
             return model
 
     def complete(self, prompt: str, system: str) -> tuple[str, dict]:
@@ -92,6 +123,11 @@ class _LocalRuntime:
             {'role': 'system', 'content': '\n\n'.join(filter(None, [IDENTITY_PROMPT, system]))},
             {'role': 'user', 'content': prompt},
         ]
+        started = perf_counter()
+        logger.info(
+            'local_model_generation_started model=%s prompt_characters=%s',
+            self._loaded_path, len(prompt),
+        )
         try:
             with self._generation_lock:
                 result = model.create_chat_completion(
@@ -102,8 +138,19 @@ class _LocalRuntime:
                 )
             text = result['choices'][0]['message']['content']
             usage = result.get('usage', {})
+            self._last_generation_seconds = round(perf_counter() - started, 3)
+            logger.info(
+                'local_model_generation_succeeded model=%s generation_seconds=%.3f',
+                self._loaded_path, self._last_generation_seconds,
+            )
             return str(text).strip(), usage if isinstance(usage, dict) else {}
         except Exception as error:
+            self._last_generation_seconds = round(perf_counter() - started, 3)
+            logger.exception(
+                'local_model_generation_failed reason=%s model=%s generation_seconds=%.3f',
+                _local_failure_reason(error), self._loaded_path or settings.local_model_file,
+                self._last_generation_seconds,
+            )
             raise ProviderUnavailableError(
                 f'local llama.cpp generation failed: {error}'
             ) from error
@@ -133,6 +180,11 @@ class _LocalRuntime:
             'loaded_process_rss_mb': self._loaded_rss_mb,
             'load_delta_mb': self._load_delta_mb,
             'load_seconds': self._load_seconds,
+            'last_generation_seconds': self._last_generation_seconds,
+            # The runtime remains loaded for the process lifetime. It is only
+            # released by reset(), used during tests/reloads, so there is no
+            # idle unload cold-start behaviour to compensate for.
+            'keep_warm': self._model is not None,
         }
 
 

@@ -107,6 +107,46 @@ def test_cost_optimization_prefers_cheaper_capable_provider():
     assert result.provider == 'deepseek'
 
 
+def test_unexplored_cloud_providers_rotate_before_adaptive_ranking(monkeypatch):
+    providers = [
+        {**CHEAP, 'provider': name, 'model_id': f'{name}-model', 'input_price': price}
+        for name, price in [
+            ('nvidia', 0), ('deepseek', .14), ('openai', 5), ('xai', 2), ('gemini', 1),
+        ]
+    ]
+    router = AdaptiveHybridRouter()
+    selected = [router.decide('explain REST API', providers).provider for _ in providers]
+
+    assert set(selected) == {item['provider'] for item in providers}
+
+
+def test_priority_can_beat_a_slightly_cheaper_provider(monkeypatch):
+    cheap_low_priority = {**CHEAP, 'provider': 'nvidia', 'model_id': 'free-model', 'input_price': 0}
+    higher_priority = {**CHEAP, 'provider': 'openai', 'model_id': 'paid-model', 'input_price': .10}
+    monkeypatch.setattr(
+        'agent.routing.hybrid_router.provider_policy',
+        lambda name: {
+            'enabled': True,
+            'routing_priority': 20 if name == 'nvidia' else 90,
+            'default_model': '',
+        },
+    )
+    performance = {
+        ('nvidia', 'free-model'): {
+            'attempts': 3, 'success_rate': .8, 'quality_score': .8, 'latency_ms': 1000,
+        },
+        ('openai', 'paid-model'): {
+            'attempts': 3, 'success_rate': .8, 'quality_score': .8, 'latency_ms': 1000,
+        },
+    }
+
+    result = AdaptiveHybridRouter().decide(
+        'explain REST API', [cheap_low_priority, higher_priority], performance=performance
+    )
+
+    assert result.provider == 'openai'
+
+
 def test_unavailable_model_is_skipped():
     result = AdaptiveHybridRouter().decide('explain REST API', [UNAVAILABLE, CHEAP])
     assert result.provider == 'deepseek'

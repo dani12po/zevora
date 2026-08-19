@@ -139,6 +139,12 @@ local installation state, and package compatibility allow it. Ranking combines
 capability quality, estimated input/output cost, mature success/quality/latency
 history, provider priority, and configured defaults.
 
+Usage-page cache hits are exact-match response-cache hits: they reduce repeat API
+cost and latency, but do not fine-tune or continuously train Local Intelligence.
+The closest adaptive behaviour is routing confidence, which learns from recorded
+success, quality, and latency for each model after the exploration samples have
+been collected.
+
 The gateway quality-checks each response. A rejected response or provider error
 is recorded in the fallback trace and advances to the next capable candidate.
 `CLOUD_FALLBACK` controls whether additional candidates are attempted after the

@@ -783,6 +783,7 @@ def test_static_frontend_module_and_theme_contract():
     for route, renderer in routes.items():
         assert re.search(rf"'{re.escape(route)}':\s*(?:\w+Route\()?{renderer}", app_javascript)
 
+
     tokens = {
         '--bg': '#151718', '--surface': '#1b1e20', '--surface2': '#222628',
         '--surface3': '#2a2f31', '--border': '#373d3f', '--border2': '#4a5254',
@@ -833,6 +834,19 @@ def test_static_frontend_module_and_theme_contract():
     assert 'replaceAssistantMessage(message, data.response' in chat_javascript
     assert 'regenerate: content => send(' not in chat_javascript
     assert '.workflow-disclosure' in css and '.message-toolbar' in css
+
+
+def test_static_module_imports_share_one_cache_bust_version():
+    root = Path(__file__).resolve().parents[1]
+    static = root / 'static'
+    version_pattern = re.compile(r'\?v=(\d{8}-\d+)')
+    bump_script = (root / 'scripts' / 'bump_asset_version.py').read_text(encoding='utf-8')
+    configured_version = re.search(r'ASSET_VERSION = "(\d{8}-\d+)"', bump_script).group(1)
+    versions = set()
+    for path in [*static.glob('*.js'), static / 'index.html']:
+        versions.update(version_pattern.findall(path.read_text(encoding='utf-8')))
+
+    assert versions == {configured_version}
 
 
 def test_dashboard_shell_is_not_cached():

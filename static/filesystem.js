@@ -1,4 +1,4 @@
-import {$, api, emptyState, escapeHtml, loadingState, setMessages, setPanel, state, userErrorMessage} from './core.js?v=20260818-11';
+import {$, api, emptyState, escapeHtml, loadingState, setMessages, setPanel, state, userErrorMessage} from './core.js?v=20260819-2';
 
 const READ_ONLY_EXTENSIONS = new Set(['png','jpg','jpeg','gif','webp','ico','pdf','zip','gz','tar','woff','woff2','ttf','exe','dll']);
 let activePath = '';

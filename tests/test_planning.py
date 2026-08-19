@@ -269,6 +269,10 @@ def test_planner_routing_uses_user_intent_not_project_context_noise(tmp_path, mo
     })())
     monkeypatch.setattr(main.settings, 'cloud_fallback', True)
     monkeypatch.setattr(
+        'agent.routing.hybrid_router.provider_policy',
+        lambda _name: {'enabled': True, 'routing_priority': 50, 'default_model': ''},
+    )
+    monkeypatch.setattr(
         main, 'get_provider',
         lambda _name: type('Provider', (), {
             'complete_for_model': lambda self, prompt, system, model_id: asyncio.sleep(

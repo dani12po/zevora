@@ -1,6 +1,8 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from agent.providers import local_provider
 from agent.providers.local_provider import LocalProvider
 
@@ -67,3 +69,17 @@ def test_local_provider_lists_model_without_loading_weights(tmp_path, monkeypatc
     assert models[0]['display_name'] == 'Zevora Local AI'
     assert models[0]['supports_vision'] is False
     assert local_provider.local_runtime_status()['loaded'] is False
+
+
+def test_local_provider_logs_specific_missing_model_reason(tmp_path, monkeypatch, caplog):
+    missing_model = tmp_path / 'missing.gguf'
+    monkeypatch.setattr(local_provider.settings, 'local_model_enabled', True)
+    monkeypatch.setattr(local_provider.settings, 'local_model_path', str(missing_model))
+    local_provider._RUNTIME.reset()
+
+    with pytest.raises(local_provider.ModelNotFoundError):
+        asyncio.run(LocalProvider().complete('hello'))
+
+    assert 'local_model_load_failed reason=model_file_missing' in caplog.text
+    assert str(missing_model) in caplog.text
+    local_provider._RUNTIME.reset()

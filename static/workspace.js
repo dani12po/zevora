@@ -1,4 +1,4 @@
-import {$, state} from './core.js?v=20260818-11';
+import {$, state} from './core.js?v=20260819-2';
 
 const KEYS = {
   chatWidth: 'zevora.workspace.chatWidth',
