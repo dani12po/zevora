@@ -28,22 +28,31 @@ class Settings(BaseSettings):
     cloud_default_provider: str = 'openai'
 
     # ── Hybrid local intelligence (runtime-agnostic configuration) ───────────
+    # The local model reference is fully configurable so quantization changes
+    # (or a future model family swap) never require a provider rewrite.
     local_model_enabled: bool = True
     local_provider_id: str = 'local'
     local_model_runtime: str = 'llamacpp'
     local_endpoint_url: str = 'http://127.0.0.1:11434'
     local_endpoint_api_key: str = ''
     local_endpoint_timeout_seconds: int = 30
+    # Qwen3.8-Flash-Next GGUF repository and quantization. The provider loads the
+    # single selected package; it never downloads the whole repository.
+    local_model_repository: str = 'unsloth/Qwen3.8-Flash-Next-GGUF'
+    local_model_quant: str = 'UD-Q4_K_XL'
+    local_model_base_url: str = ''
+    local_model_display_name: str = 'Qwen3.8-Flash-Next'
     local_model_path: str = 'models/zevora-4b-thinking.gguf'
-    local_model_name: str = 'zevora'
+    local_model_name: str = 'qwen3.8-flash-next'
     local_model_package_path: str = 'data/models/zevora-local'
     local_model_external_path: str = ''
     local_model_registry_path: str = 'data/database/model_registry.db'
     local_model_context_length: int = 8192
-    local_model_max_tokens: int = 1024
+    local_model_max_tokens: int = 2048
     local_model_threads: int = 0
     local_model_gpu_layers: int = 0
-    local_model_temperature: float = .6
+    local_model_batch_size: int = 512
+    local_model_temperature: float = .4
 
     # ── Provider discovery, custom runtimes, and context economy ─────────────
     model_registry_ttl_hours: int = 24
@@ -69,7 +78,7 @@ class Settings(BaseSettings):
 
     # ── Skills and evolution ─────────────────────────────────────────────────
     basic_skills_enabled: bool = True
-    basic_skills_dir: str = r'E:\SUPERAGENT-v3-OPENCLAW-HERMES\openclaw\skills'
+    basic_skills_dir: str = ''
     basic_skills_allowlist: str = 'm0,m1,m2,m3,m4,m5,m6,m7,m8,m9,m11,m12,x1,x2,x3'
     skill_registry_path: str = 'data/database/skills.db'
     evolution_enabled: bool = True

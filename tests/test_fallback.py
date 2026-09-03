@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 import main
-from agent.memory.store import Store
+from agent.memory.store import Store, model_cache_signature
 from agent.providers.errors import (
     ModelNotFoundError,
     ProviderAuthenticationError,
@@ -428,7 +428,8 @@ def test_cloud_to_local_fallback_after_cloud_failure(tmp_path, monkeypatch):
 def test_task_exact_cache_resolves_locally_without_provider(tmp_path, monkeypatch):
     isolated_store = Store(tmp_path / 'agent.db')
     isolated_store.put_cache(
-        'cached question', 'cached answer', 'openai', 'model-a', 'general'
+        'cached question', 'cached answer', 'openai', 'model-a', 'general',
+        model_signature=model_cache_signature(),
     )
     monkeypatch.setattr(main, 'store', isolated_store)
     monkeypatch.setattr(
@@ -508,3 +509,27 @@ def test_task_generation_reports_discovery_context_and_flow(tmp_path, monkeypatc
     assert 'Project discovery (authoritative local index):' in provider_systems[0]
     assert 'Languages: Python' in provider_systems[0]
     assert extracted[0][3:5] == ('local', 'zevora')
+
+
+def test_exact_cache_does_not_replay_across_model_signature_change(tmp_path):
+    isolated_store = Store(tmp_path / 'agent.db')
+    sig_a = 'a' * 64
+    sig_b = 'b' * 64
+    isolated_store.put_cache(
+        'same prompt', 'answer under model A', 'local', 'qwen3.8-flash-next',
+        'coding', model_signature=sig_a,
+    )
+
+    assert isolated_store.get_cache('same prompt', '', sig_a) is not None
+    assert isolated_store.get_cache('same prompt', '', sig_b) is None
+    assert isolated_store.get_cache('same prompt', '', sig_a)['response'] == 'answer under model A'
+
+
+def test_model_cache_signature_changes_when_quant_changes(monkeypatch):
+    from agent.config import settings as live_settings
+    from agent.memory.store import model_cache_signature as sig
+    monkeypatch.setattr(live_settings, 'local_model_quant', 'UD-Q4_K_XL')
+    sig_base = sig()
+    monkeypatch.setattr(live_settings, 'local_model_quant', 'Q4_K_M')
+    sig_alt = sig()
+    assert sig_base != sig_alt

@@ -101,6 +101,16 @@ def test_routing_modes_constrain_candidate_pool(monkeypatch):
     }
 
 
+def test_routine_coding_task_routes_local_first_across_mid_complexity():
+    candidates = AdaptiveHybridRouter().candidates(
+        'fix the TypeScript compile errors in the component file and run the tests',
+        [LOCAL, CHEAP, EXPENSIVE],
+    )
+    assert candidates[0].route is Route.LOCAL
+    assert [item.route for item in candidates[:2]] == [Route.LOCAL, Route.CLOUD]
+
+
+
 def test_cost_optimization_prefers_cheaper_capable_provider():
     result = AdaptiveHybridRouter().decide('explain REST API', [CHEAP, EXPENSIVE])
     # Both are capable; cheaper should win when cost_optimization is on.

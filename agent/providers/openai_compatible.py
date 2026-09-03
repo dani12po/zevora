@@ -14,6 +14,7 @@ from .errors import (
     map_http_error,
     raise_for_response,
 )
+from .ssrf import assert_provider_base_url
 
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ class OpenAICompatibleProvider(AIProvider):
     ):
         self.name = name
         self.api_key = api_key
-        self.base_url = base_url.rstrip('/')
+        self.base_url = assert_provider_base_url(base_url).rstrip('/')
         self.default_model = default_model
         self.supports_vision = bool(supports_vision)
 

@@ -3,16 +3,18 @@
     "local": {
       "enabled": true,
       "routing_priority": 100,
-      "default_model": "zevora",
+      "default_model": "qwen3.8-flash-next",
       "supports_vision": false,
       "runtime": "llamacpp",
+      "model_repository": "unsloth/Qwen3.8-Flash-Next-GGUF",
+      "quantization": "UD-Q4_K_XL",
       "model_path": "models/zevora-4b-thinking.gguf",
       "context_length": 8192,
-      "max_output_tokens": 1024,
+      "max_output_tokens": 2048,
       "capability_profile": {
-        "instruction_score": 0.78,
-        "coding_score": 0.68,
-        "reasoning_score": 0.72
+        "instruction_score": 0.9,
+        "coding_score": 0.86,
+        "reasoning_score": 0.84
       }
     },
     "openai": {

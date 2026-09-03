@@ -106,3 +106,14 @@ def test_runtime_test_passes_approval(provider_service, capsys):
     service = provider_service.instances[-1]
     assert service.calls == [('test', 'runtime-provider', True)]
     assert json.loads(capsys.readouterr().out)['success'] is True
+
+
+def test_local_command_reports_qwen_model(capsys):
+    main(['local'])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['provider'] == 'local'
+    assert payload['model_id'] == 'qwen3.8-flash-next'
+    assert payload['display_name'] == 'Qwen3.8-Flash-Next'
+    assert payload['repository'] == 'unsloth/Qwen3.8-Flash-Next-GGUF'
+    assert payload['quant'] == 'UD-Q4_K_XL'
+    assert payload['cache_signature']

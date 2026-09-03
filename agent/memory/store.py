@@ -100,23 +100,25 @@ class Store:
                         conn.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
 
     @staticmethod
-    def key(prompt: str, context_hash: str = '') -> str:
-        return hashlib.sha256((prompt + context_hash).encode()).hexdigest()
+    def key(prompt: str, context_hash: str = '', model_signature: str = '') -> str:
+        return hashlib.sha256((prompt + context_hash + model_signature).encode()).hexdigest()
 
-    def get_cache(self, prompt: str, context_hash: str = ''):
+    def get_cache(self, prompt: str, context_hash: str = '', model_signature: str = ''):
         now = datetime.now(timezone.utc).isoformat()
+        key = self.key(prompt, context_hash, model_signature)
         with self.connection() as conn:
-            row=conn.execute('SELECT * FROM exact_cache WHERE key=? AND (expires_at IS NULL OR expires_at>?)', (self.key(prompt, context_hash), now)).fetchone()
-            if row: conn.execute('UPDATE exact_cache SET last_accessed=?, hit_count=hit_count+1 WHERE key=?',(now,self.key(prompt, context_hash)))
+            row=conn.execute('SELECT * FROM exact_cache WHERE key=? AND (expires_at IS NULL OR expires_at>?)', (key, now)).fetchone()
+            if row: conn.execute('UPDATE exact_cache SET last_accessed=?, hit_count=hit_count+1 WHERE key=?',(now,key))
             return row
 
-    def put_cache(self, prompt, response, provider, model, task_type, project=None, context_hash='', ttl_hours=24):
+    def put_cache(self, prompt, response, provider, model, task_type, project=None, context_hash='', ttl_hours=24, model_signature=''):
         expires = datetime.fromtimestamp(datetime.now().timestamp() + ttl_hours * 3600, timezone.utc).isoformat()
+        key = self.key(prompt, context_hash, model_signature)
         with self.connection() as conn:
             now=datetime.now(timezone.utc).isoformat()
             conn.execute('''INSERT OR REPLACE INTO exact_cache
                 (key,prompt,response,provider,model,task_type,project,context_hash,quality_score,expires_at,created_at,last_accessed,size_bytes,hit_count)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (self.key(prompt, context_hash), prompt, response, provider, model, task_type, project, context_hash, 1, expires, now, now, len(response.encode()), 0))
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (key, prompt, response, provider, model, task_type, project, context_hash, 1, expires, now, now, len(response.encode()), 0))
 
     def replace_project_files(self, project: str, rows: list[dict]):
         """Atomically replace an index so deleted files cannot remain searchable."""
@@ -264,3 +266,23 @@ class Store:
                 if not dry_run and count:
                     conn.execute(f'DELETE FROM {table} WHERE {predicate}', args[table])
         return {'dry_run': dry_run, 'candidates': counts, 'total': sum(counts.values())}
+
+
+def model_cache_signature() -> str:
+    """Stable cache identity for the local inference engine.
+
+    The exact response cache must not replay answers produced by a different
+    model, quantization, context configuration, or provider runtime. Changes to
+    any of these intentionally invalidate prior cache entries.
+    """
+    from ..config import settings  # local import to avoid a cycle at import time
+    parts = (
+        'local',
+        str(settings.local_model_name),
+        str(settings.local_model_quant or ''),
+        str(settings.local_model_runtime),
+        str(settings.local_model_context_length),
+        str(settings.local_model_max_tokens),
+        str(settings.local_model_gpu_layers),
+    )
+    return hashlib.sha256('|'.join(parts).encode()).hexdigest()

@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from agent.config import ROOT, reload_settings, settings
 from zevora.version import __version__
-from agent.memory.store import Store
+from agent.memory.store import Store, model_cache_signature
 from agent.models.manager import LocalIntelligenceManager
 from agent.models.registry import ModelRegistry
 from agent.providers.discovery import ProviderDiscovery
@@ -2003,7 +2003,8 @@ async def task(body: TaskRequest):
     context_hash = Store.key(project_hash, attachment_hash) if attachment_hash else project_hash
     progress('REASON', detail='Preparing the response context')
     # Action-bearing and explicitly routed requests are never replayed through Auto cache entries.
-    cached = None if body.actions or mode != 'auto' else store.get_cache(prompt, context_hash)
+    cache_sig = model_cache_signature()
+    cached = None if body.actions or mode != 'auto' else store.get_cache(prompt, context_hash, cache_sig)
     if cached:
         progress('FINAL_RESPONSE', detail='Using a verified local response')
         with store.connection() as conn:
@@ -2055,6 +2056,7 @@ async def task(body: TaskRequest):
     context_economy = build_economic_context(
         context_parts,
         max_tokens=settings.context_max_tokens,
+        compression_enabled=settings.context_compression_enabled,
     )
     combined_context = context_economy.text
     context_status = 'RETRIEVAL_ENRICHED' if combined_context else 'ROUTER_REQUIRED'
@@ -2152,7 +2154,7 @@ async def task(body: TaskRequest):
     if not body.actions and mode == 'auto':
         store.put_cache(
             prompt, response, provider_name, model, task_type.value,
-            body.project, context_hash=context_hash,
+            body.project, context_hash=context_hash, model_signature=cache_sig,
         )
     store.add_memory('conversation', prompt, body.project, task_type.value)
     elapsed = int((perf_counter() - started) * 1000)

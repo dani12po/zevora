@@ -42,6 +42,10 @@ class AdaptiveHybridRouter:
     # Architecture and migration rules currently raise complexity to .53;
     # keep those tasks cloud-first while routine prompts remain local-first.
     CLOUD_FIRST_COMPLEXITY = .50
+    # Coding/debugging/tool tasks under this complexity remain local-first in
+    # AUTO mode so the local Qwen engine handles routine coding work; architecture
+    # and migration tasks stay cloud-first via the complexity bump in the classifier.
+    CODING_LOCAL_FIRST_COMPLEXITY = .60
 
     def __init__(self, classifier=None):
         self.classifier = classifier or TaskClassifier()
@@ -325,9 +329,20 @@ class AdaptiveHybridRouter:
             return local
         if mode == 'CLOUD_ONLY':
             return cloud
+        # Local Qwen is the first-class coding engine: for routine coding /
+        # debugging / tool tasks below the coding complexity gate it leads the
+        # queue, while genuinely complex/architectural, long-context, and vision
+        # work stays cloud-first. Vision and architecture/migration work always
+        # prefer cloud.
+        coding_local_first = bool(
+            set(task.labels) & {'coding', 'debugging', 'tool_task'}
+        ) and task.complexity_score < self.CODING_LOCAL_FIRST_COMPLEXITY
         cloud_first = (
-            task.complexity_score >= self.CLOUD_FIRST_COMPLEXITY
-            or cap.VISION in task.required_capabilities
+            (cap.VISION in task.required_capabilities)
+            or (
+                not coding_local_first
+                and task.complexity_score >= self.CLOUD_FIRST_COMPLEXITY
+            )
         )
         return (cloud + local) if cloud_first else (local + cloud)
 

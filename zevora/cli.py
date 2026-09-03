@@ -80,6 +80,32 @@ def intelligence_status():
     print(json.dumps(system_status(), indent=2, sort_keys=True))
 
 
+def local_status():
+    """Report the local Qwen model configuration and runtime state."""
+    from agent.config import settings
+    from agent.models.manager import LocalIntelligenceManager
+    from agent.providers.local_provider import local_runtime_status
+    from agent.memory.store import model_cache_signature
+
+    manager = LocalIntelligenceManager()
+    runtime = local_runtime_status()
+    payload = {
+        'provider': 'local',
+        'display_name': settings.local_model_display_name,
+        'model_id': settings.local_model_name,
+        'enabled': settings.local_model_enabled,
+        'repository': settings.local_model_repository,
+        'quant': settings.local_model_quant,
+        'runtime': settings.local_model_runtime,
+        'model_path': str(settings.local_model_file),
+    }
+    payload.update({key: runtime.get(key) for key in ('model_exists', 'model_size_mb', 'state', 'qr_available', 'runtime_available') if key in runtime})
+    payload['context_max_tokens'] = settings.context_max_tokens
+    payload['cache_signature'] = model_cache_signature()[:16]
+    payload['discovered_gguf_count'] = len(manager.discover_models())
+    return payload
+
+
 def uninstall_local(approved=False):
     from agent.models.manager import LocalIntelligenceManager
     result = LocalIntelligenceManager().uninstall_package(approved=approved)
@@ -234,12 +260,13 @@ def main(argv=None):
         'status': show_status,
         'doctor': doctor,
         'intelligence': intelligence_status,
+        'local': lambda: print(json.dumps(local_status(), indent=2, sort_keys=True)),
         'uninstall-local': lambda: uninstall_local(args.approve),
         'update': lambda: print('Verified component updates require a configured HTTPS manifest and SHA-256 hashes.'),
         'version': lambda: print(f'ZEVORA\nZero-External Vendor Oriented Reasoning Agent\n\nVersion: {__version__}'),
         'help': lambda: print(
             'zevora [start|stop|restart|background|open|status|doctor|intelligence|'
-            'uninstall-local [--approve]|update|version|help]\n'
+            'local|uninstall-local [--approve]|update|version|help]\n'
             'zevora provider [list|add|test|remove|import|export|runtime-test]'
         ),
     }

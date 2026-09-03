@@ -889,7 +889,7 @@ def test_provider_config_exposes_local_runtime_without_api_key():
     local = next(item for item in response.json() if item['provider'] == 'local')
     assert local['key_set'] is False
     assert local['default_model'] == main.settings.local_model_name
-    assert local['runtime_status']['display_name'] == 'Zevora Local AI'
+    assert local['runtime_status']['display_name'] == main.settings.local_model_display_name
     assert local['runtime_status']['loaded'] is False
 
 

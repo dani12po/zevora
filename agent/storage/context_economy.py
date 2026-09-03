@@ -50,9 +50,24 @@ def build_context(
     max_tokens: int = 12000,
     provider_tokens: int = 0,
     cache_saved_tokens: int = 0,
+    compression_enabled: bool = True,
 ) -> ContextEconomyResult:
     items = [str(section) for section in sections if str(section).strip()]
     original = sum(estimate_tokens(item) for item in items)
+    if not compression_enabled:
+        text = "\n\n".join(items)
+        compressed_tokens = min(estimate_tokens(text), max(0, int(max_tokens)))
+        return ContextEconomyResult(
+            text=text,
+            estimated_context_tokens=original,
+            compressed_tokens=compressed_tokens,
+            removed_tokens=max(0, original - compressed_tokens),
+            provider_tokens=max(0, int(provider_tokens)),
+            cache_saved_tokens=max(0, int(cache_saved_tokens)),
+            source_count=len(items),
+            deduplicated_count=0,
+            context_hash=_fingerprint(text),
+        )
     max_chars = max(256, int(max_tokens) * 4)
     compressed = compress_context(items, max_chars=max_chars)
     text = compressed["text"]
