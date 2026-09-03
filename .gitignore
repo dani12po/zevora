@@ -23,3 +23,7 @@ cache/*
 
 # Local task prompts are not part of the application source.
 prompt.txt
+
+# Local backup and scratch/test data not part of the application source.
+*.bak
+projects/

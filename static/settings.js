@@ -1,4 +1,4 @@
-import {$, api, escapeHtml, pageWrap, setPanel, userErrorMessage} from './core.js?v=20260819-2';
+import {$, api, escapeHtml, pageWrap, setPanel, userErrorMessage} from './core.js?v=20260819-3';
 
 export async function renderSettings() {
   const settings = await api('/api/settings');

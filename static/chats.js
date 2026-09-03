@@ -1,6 +1,6 @@
-import {$, api, escapeHtml, exposeHandlers, loadingState, navigate, pageWrap, setMessages, setPanel, setSidebarOpen, state, userErrorMessage} from './core.js?v=20260819-2';
-import {renderMarkdown} from './markdown.js?v=20260819-2';
-import {cancelReveals, revealText} from './chat-reveal.js?v=20260819-2';
+import {$, api, escapeHtml, exposeHandlers, loadingState, navigate, pageWrap, setMessages, setPanel, setSidebarOpen, state, userErrorMessage} from './core.js?v=20260819-3';
+import {renderMarkdown} from './markdown.js?v=20260819-3';
+import {cancelReveals, revealText} from './chat-reveal.js?v=20260819-3';
 export {cancelReveals, revealText};
 
 let renamingChatId = null;
@@ -78,6 +78,13 @@ function canonicalEvents(progress = {}) {
   }));
 }
 
+function workflowFileAction(item) {
+  if (!String(item.event || '').startsWith('file_')) return '';
+  const path = item.data?.path || item.path;
+  if (typeof path !== 'string' || !path) return '';
+  return `<button class="workflow-open-file" type="button" data-open-workspace-file="${escapeHtml(path)}">Open file</button>`;
+}
+
 function workflowPanel(progress = {}, live = false) {
   const events = canonicalEvents(progress);
   if (!events.length) return '';
@@ -91,7 +98,7 @@ function workflowPanel(progress = {}, live = false) {
   const rows = [...latestByStage.values()].map(item => {
     const status = item.status || 'completed';
     const title = EVENT_LABELS[item.event] || item.title || (item.stage || 'Workflow').replaceAll('_', ' ');
-    return `<li class="workflow-stage is-${escapeHtml(status)}"><span>${eventMark(status)}</span><span><b>${escapeHtml(title)}</b>${item.message ? `<small class="workflow-detail">${escapeHtml(item.message)}</small>` : ''}</span></li>`;
+    return `<li class="workflow-stage is-${escapeHtml(status)}"><span>${eventMark(status)}</span><span><b>${escapeHtml(title)}</b>${item.message ? `<small class="workflow-detail">${escapeHtml(item.message)}</small>` : ''}${workflowFileAction(item)}</span></li>`;
   }).join('');
   const trace = events.map(item => `<li><code>${escapeHtml(String(item.sequence || ''))}</code><span>${escapeHtml(item.event || item.stage || 'workflow')}</span><small>${escapeHtml(item.status || 'completed')}</small></li>`).join('');
   const status = progress.state || progress.status || (live ? 'running' : 'completed');

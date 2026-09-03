@@ -6,7 +6,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/styles.css?v=20260819-2">
+<link rel="stylesheet" href="/static/styles.css?v=20260819-3">
 </head>
 <body>
 <div class="app">
@@ -132,7 +132,9 @@
     </div>
   </header>
 
-  <section id="main-chat-host" class="main-chat-host"></section>
+  <section id="main-chat-host" class="main-chat-host">
+    <section id="chat-surface" class="chat-surface" aria-label="Current conversation"></section>
+  </section>
 
   <section id="coding-workspace" class="coding-workspace hidden" aria-label="Coding workspace">
     <section class="workspace-editor-column">
@@ -160,10 +162,13 @@
     <aside id="chat-dock" class="chat-dock" aria-label="Workspace chat">
       <div id="chat-dock-resizer" class="chat-dock-resizer" title="Resize chat" aria-hidden="true"></div>
       <header class="chat-dock-header">
-        <b>Chat</b>
-        <button id="chat-dock-toggle" class="icon-action" type="button" title="Close chat" aria-label="Close chat">›</button>
+        <b id="workspace-chat-title">Chat</b>
+        <div class="chat-dock-actions">
+          <button id="workspace-open-full-chat" class="btn-dock-text" type="button">Open full chat</button>
+          <button id="chat-dock-toggle" class="icon-action" type="button" title="Close chat" aria-label="Close chat" aria-expanded="true" aria-controls="chat-dock-content">›</button>
+        </div>
       </header>
-      <div id="chat-dock-content" class="chat-dock-content">
+      <div id="chat-dock-content" class="chat-dock-content" aria-hidden="false">
       <section id="messages" class="messages">
     <div class="empty-state">
       <div class="empty-icon">
@@ -340,6 +345,6 @@
     });
 })();
 </script>
-<script type="module" src="/static/app.js?v=20260819-2"></script>
+<script type="module" src="/static/app.js?v=20260819-3"></script>
 </body>
 </html>

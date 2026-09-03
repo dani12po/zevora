@@ -16,7 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "static"
-ASSET_VERSION = "20260819-2"
+ASSET_VERSION = "20260819-3"
 VERSION_PATTERN = re.compile(r"(?<=\?v=)\d{8}-\d+")
 
 

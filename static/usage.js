@@ -1,4 +1,4 @@
-import {$, api, escapeHtml, exposeHandlers, pageWrap, setPanel} from './core.js?v=20260819-2';
+import {$, api, escapeHtml, exposeHandlers, pageWrap, setPanel} from './core.js?v=20260819-3';
 
 function usageRows(rows) {
   if (!rows.length) return '<tr><td colspan="8" class="table-empty">No usage data for this period.</td></tr>';

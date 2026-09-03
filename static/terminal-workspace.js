@@ -1,4 +1,4 @@
-import {$, api} from './core.js?v=20260819-2';
+import {$, api} from './core.js?v=20260819-3';
 
 const tabs = new Map();
 let activeTabId = null;

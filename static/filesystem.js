@@ -1,4 +1,4 @@
-import {$, api, emptyState, escapeHtml, loadingState, setMessages, setPanel, state, userErrorMessage} from './core.js?v=20260819-2';
+import {$, api, emptyState, escapeHtml, loadingState, state, userErrorMessage} from './core.js?v=20260819-3';
 
 const READ_ONLY_EXTENSIONS = new Set(['png','jpg','jpeg','gif','webp','ico','pdf','zip','gz','tar','woff','woff2','ttf','exe','dll']);
 let activePath = '';
@@ -6,22 +6,29 @@ let savedContent = '';
 let activeRow = null;
 let revealNextOpen = false;
 let activeReveal = null;
+let pendingOpenPath = '';
 
 export async function renderFilesystem() {
   const projectId = $('project-select').value;
   const workspaceHost = $('workspace-filesystem');
+  if (!workspaceHost) return;
   if (!projectId) {
     const actions = '<div class="actions"><button id="filesystem-open-project">Open project</button></div>';
     const content = emptyState('No project open', 'Open a project to browse its files.', {kind:'local', actions});
-    if (workspaceHost) workspaceHost.innerHTML = `<div class="workspace-placeholder">${content}</div>`;
-    else setPanel('Filesystem', content);
+    workspaceHost.innerHTML = `<div class="workspace-placeholder">${content}</div>`;
     $('filesystem-open-project').onclick = () => $('project-dialog').showModal();
     return;
   }
   state.fsProjectId = projectId;
-  if (workspaceHost) workspaceHost.innerHTML = loadingState('Loading project tree...', 'local');
-  else setPanel('Filesystem', loadingState('Loading project tree...', 'local'));
-  const data = await api(`/api/filesystem/tree?project_id=${projectId}`);
+  workspaceHost.innerHTML = loadingState('Loading project tree...', 'local');
+  let data;
+  try {
+    data = await api(`/api/filesystem/tree?project_id=${projectId}`);
+  } catch (error) {
+    workspaceHost.innerHTML = `<div class="workspace-placeholder"><div class="error-text">${escapeHtml(userErrorMessage(error, 'Unable to load project files.'))}</div><div class="actions"><button id="filesystem-retry">Retry</button></div></div>`;
+    $('filesystem-retry')?.addEventListener('click', () => renderFilesystem());
+    return;
+  }
   if (state.fsProjectId !== projectId) return;
   const layout = document.createElement('div');
   layout.className = 'fs-layout route-enter';
@@ -33,16 +40,13 @@ export async function renderFilesystem() {
   preview.id = 'fs-preview';
   preview.innerHTML = '<span class="muted-copy">Select a file to edit or preview.</span>';
   layout.append(treePane, preview);
-  if (workspaceHost) workspaceHost.replaceChildren(layout);
-  else {
-    setMessages('');
-    $('messages').append(layout);
-    $('composer').classList.add('hidden');
-  }
+  workspaceHost.replaceChildren(layout);
   renderTree(data.tree, treePane, 0);
-  if (activePath) {
-    const row = treePane.querySelector(`[data-file-path="${CSS.escape(activePath)}"]`);
-    if (row) await openFile(activePath, row);
+  const pathToOpen = pendingOpenPath || activePath;
+  pendingOpenPath = '';
+  if (pathToOpen) {
+    const row = treePane.querySelector(`[data-file-path="${CSS.escape(pathToOpen)}"]`);
+    if (row) await openFile(pathToOpen, row);
     else resetEditorState();
   }
 }
@@ -227,15 +231,35 @@ function hasDirtyEditor() {
 }
 
 function workflowChangedFiles(detail = {}) {
-  const observations = detail.agent_trace?.observations || [];
-  return observations.some(item => String(item.tool || '').includes('file'));
+  const event = detail.event || detail;
+  if (String(event.event || '').startsWith('file_')) {
+    const path = event.data?.path || event.path;
+    if (typeof path === 'string' && path) pendingOpenPath = path;
+    return true;
+  }
+  return (detail.agent_trace?.observations || []).some(item => String(item.tool || '').includes('file'));
 }
 
 window.addEventListener('zevora:workflow-complete', event => {
-  if (location.pathname !== '/filesystem' || !workflowChangedFiles(event.detail) || hasDirtyEditor()) return;
+  if (!state.workspaceMode || !workflowChangedFiles(event.detail) || hasDirtyEditor()) return;
   revealNextOpen = Boolean(activePath);
   renderFilesystem().catch(() => { revealNextOpen = false; });
 });
+
+window.addEventListener('zevora:workflow-event', event => {
+  if (!state.workspaceMode || !workflowChangedFiles(event.detail) || hasDirtyEditor()) return;
+  window.clearTimeout(window.__zevoraFilesystemRefresh);
+  window.__zevoraFilesystemRefresh = window.setTimeout(() => renderFilesystem().catch(() => {}), 180);
+});
+
+window.addEventListener('zevora:open-workspace-file', event => {
+  const path = event.detail?.path;
+  if (!path || !state.workspaceMode) return;
+  pendingOpenPath = path;
+  renderFilesystem().catch(() => {});
+});
+
+export function refreshWorkspaceFilesystem() { return renderFilesystem(); }
 
 async function openFile(path, row, {force=false} = {}) {
   const editor = $('fs-editor');

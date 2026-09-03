@@ -849,6 +849,33 @@ def test_static_module_imports_share_one_cache_bust_version():
     assert versions == {configured_version}
 
 
+def test_workspace_uses_one_movable_chat_surface_and_component_filesystem():
+    root = Path(__file__).resolve().parents[1]
+    static = root / 'static'
+    html = (static / 'index.html').read_text(encoding='utf-8')
+    workspace = (static / 'workspace.js').read_text(encoding='utf-8')
+    filesystem = (static / 'filesystem.js').read_text(encoding='utf-8')
+    chat = (static / 'chat.js').read_text(encoding='utf-8')
+    app = (static / 'app.js').read_text(encoding='utf-8')
+    css = (static / 'styles.css').read_text(encoding='utf-8')
+
+    assert 'id="main-chat-host"' in html and 'id="chat-surface"' in html
+    assert html.count('id="messages"') == 1 and html.count('id="composer"') == 1
+    assert 'mountChatSurface' in workspace
+    assert "for (const id of ['messages', 'audit-result', 'composer'])" in workspace
+    assert 'state.workspaceMode = active' in workspace
+    assert "WORKSPACE_ROUTES = new Set(['/filesystem', '/terminal'])" in workspace
+    assert 'workspaceSidebarUserOverride' in workspace
+    assert 'chat-dock-collapsed' in workspace and 'zevora.workspace.chatWidth' in workspace
+    assert 'setMessages(' not in filesystem and "classList.add('hidden')" not in filesystem
+    assert "workspaceHost.replaceChildren(layout)" in filesystem
+    assert "return {coding:codingRequest, workspace:" in chat
+    assert "if (!state.workspaceMode) await navigate(routeDecision.route)" in chat
+    assert "'/terminal': workspaceRoute(renderTerminal)" in app
+    assert '.coding-workspace.chat-dock-collapsed' in css
+    assert 'body.workspace-mode .workspace-only-control' in css
+
+
 def test_dashboard_shell_is_not_cached():
     response = TestClient(main.app).get('/')
     assert response.status_code == 200

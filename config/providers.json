@@ -16,10 +16,10 @@
       }
     },
     "openai": {
-      "enabled": false,
+      "enabled": true,
       "routing_priority": 90,
       "supports_vision": false,
-      "default_model": "orcarouter/free"
+      "default_model": "deepseek-v4-flash"
     },
     "anthropic": {
       "enabled": false,
@@ -47,7 +47,7 @@
     },
     "nvidia": {
       "enabled": true,
-      "routing_priority": 80,
+      "routing_priority": 30,
       "default_model": "z-ai/glm-5.2",
       "supports_vision": false
     }

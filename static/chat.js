@@ -1,5 +1,6 @@
-import {$, api, emptyState, escapeHtml, fmtBytes, navigate, setMessages, state, stateIndicator, userErrorMessage} from './core.js?v=20260819-2';
-import {appendMessage, cancelReveals, configureMessageActions, newChat, refreshSidebarChats, replaceAssistantMessage} from './chats.js?v=20260819-2';
+import {$, api, emptyState, escapeHtml, fmtBytes, navigate, setMessages, state, stateIndicator, userErrorMessage} from './core.js?v=20260819-3';
+import {appendMessage, cancelReveals, configureMessageActions, newChat, refreshSidebarChats, replaceAssistantMessage} from './chats.js?v=20260819-3';
+import {ensureWorkspaceChatOpen} from './workspace.js?v=20260819-3';
 
 const LIMITS = {image:8_000_000,pdf:12_000_000,text:2_000_000};
 let projectSelectionGeneration = 0;
@@ -180,7 +181,7 @@ export async function regenerateResponse(content, meta, message, originalText) {
 configureMessageActions({regenerate: regenerateResponse});
 
 async function routeCodingPrompt(content) {
-  if (location.pathname === '/filesystem' || !content) return;
+  if (!content) return {coding:false, workspace:false, route:null, task_types:[]};
   try {
     const decision = await api(`/api/route?prompt=${encodeURIComponent(content)}`);
     const taskTypes = new Set(decision.task_type || []);
@@ -189,17 +190,18 @@ async function routeCodingPrompt(content) {
       || taskTypes.has('debugging')
       || taskTypes.has('tool_task')
       || tools.some(tool => tool === 'filesystem.read' || tool === 'terminal.execute' || tool === 'project.create');
-    if (codingRequest) await navigate('/filesystem');
+    return {coding:codingRequest, workspace:codingRequest && Boolean($('project-select').value), route:codingRequest ? '/filesystem' : null, task_types:[...taskTypes]};
   } catch (_) {
-    // Navigation is an enhancement; the canonical chat request remains available.
+    // Classification is an enhancement; the canonical chat request remains available.
   }
+  return {coding:false, workspace:false, route:null, task_types:[]};
 }
 
 export async function send(replay=null){
   const content=replay?.content||$('prompt').value.trim();
   if(!content||state.isSending)return;
   cancelReveals();
-  await routeCodingPrompt(content);
+  const routeDecision=await routeCodingPrompt(content);
   if(!state.gatewayReady&&!await checkGateway()){$('route-status').textContent='Gateway offline';return;}
   const request=replay||{content,attachments:state.pendingAttachments.map(({name,media_type,data_base64})=>({name,media_type,data_base64})),actions:state.pendingActions.map(action=>({...action}))};
   state.isSending=true;syncComposerState();let userMessage=null,waiting=null,stopProgress=()=>{};
@@ -208,6 +210,13 @@ export async function send(replay=null){
     const projectId=$('project-select').value||null;
     const requestId=newProgressId();activeRequestId=requestId;syncComposerState();
     if(!request.retrying)userMessage=appendMessage('user',content,{attachments:request.attachments});
+    if(routeDecision.workspace){
+      ensureWorkspaceChatOpen();
+      if (!state.workspaceMode) await navigate(routeDecision.route);
+      ensureWorkspaceChatOpen();
+    } else if (routeDecision.coding && !$('project-select').value) {
+      $('route-status').textContent='Project folder required - open a folder before workspace actions';
+    }
     $('prompt').value='';resizePrompt();
     const activity=request.actions.length?'Running workspace actions':'Generating response';
     $('route-status').textContent=request.actions.length?'Step 2 of 3 - Running actions':'Generating response';
@@ -215,7 +224,7 @@ export async function send(replay=null){
     const payload={message:content,request_id:requestId,conversation_id:state.activeChat,project_id:projectId,mode:$('routing-override')?.value||'auto',provider:$('routing-provider')?.value||null,model:$('routing-model')?.value||null,attachments:request.attachments,actions:request.actions};
     let data;
     try {
-      data=await streamChat(payload,event=>waiting.setWorkflowEvent?.(event));
+      data=await streamChat(payload,event=>{ waiting.setWorkflowEvent?.(event); window.dispatchEvent(new CustomEvent('zevora:workflow-event', {detail:event})); });
     } catch (streamFailure) {
       if (streamFailure.streamTerminal) throw streamFailure;
       $('route-status').textContent='Realtime connection interrupted - recovering response';
@@ -225,9 +234,11 @@ export async function send(replay=null){
     stopProgress();state.activeChat=data.conversation_id;replaceAssistantMessage(waiting,data.response,{...data,reveal:true,regenerate_content:content});waiting.classList.remove('is-typing');
     state.pendingAttachments=[];state.pendingActions=[];state.pendingApprovalRequest=null;renderComposerItems();
     $('route-status').textContent=data.reason==='TOOLS_EXECUTED'?'Completed - changes were written to the selected folder':fallbackStatus(data);
+    ensureWorkspaceChatOpen();
     window.dispatchEvent(new CustomEvent('zevora:workflow-complete', {detail:data}));
     await refreshSidebarChats();
   }catch(error){
+    ensureWorkspaceChatOpen();
     stopProgress();waiting?.remove();
     const readable={PROJECT_REQUIRED:'Open a project folder first. The agent cannot access drive files from chat-only mode.',ACTION_FAILED:'The requested action failed. No success was reported.',AI_EXECUTION_ERROR:error.message||'No configured AI model was able to respond.'};
     const explanation=readable[error.code]||userErrorMessage(error);

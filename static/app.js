@@ -1,28 +1,28 @@
-import {$, api, navigate, registerRoutes, render, setSidebarOpen} from './core.js?v=20260819-2';
-import {initWorkspaceShell, enterCodingWorkspace, leaveCodingWorkspace} from './workspace.js?v=20260819-2';
-import {initTerminalWorkspace} from './terminal-workspace.js?v=20260819-2';
-import {checkGateway, createProject, loadProject, pickProject, refreshProjects, renderChat, renderComposerItems, syncWorkspaceAccess, wireChatEvents} from './chat.js?v=20260819-2';
-import {confirmRenameChat, newChat, refreshSidebarChats, renderChatVault} from './chats.js?v=20260819-2';
-import {wireMarkdownActions} from './markdown.js?v=20260819-2';
-import {renderDocs} from './docs.js?v=20260819-2';
-import {renderProviders} from './providers.js?v=20260819-2';
-import {renderLocalAI} from './local-ai.js?v=20260819-2';
-import {renderModelRouter} from './model-router.js?v=20260819-2';
-import {renderMCP} from './mcp.js?v=20260819-2';
-import {configureTerminal, renderTerminal} from './terminal.js?v=20260819-2';
-import {renderFilesystem} from './filesystem.js?v=20260819-2';
-import {renderMemory} from './memory.js?v=20260819-2';
-import {renderCache} from './cache.js?v=20260819-2';
-import {renderUsage} from './usage.js?v=20260819-2';
-import {renderSettings} from './settings.js?v=20260819-2';
+import {$, api, navigate, registerRoutes, render, setSidebarOpen} from './core.js?v=20260819-3';
+import {initWorkspaceShell, syncWorkspaceLayout} from './workspace.js?v=20260819-3';
+import {initTerminalWorkspace} from './terminal-workspace.js?v=20260819-3';
+import {checkGateway, createProject, loadProject, pickProject, refreshProjects, renderChat, renderComposerItems, syncWorkspaceAccess, wireChatEvents} from './chat.js?v=20260819-3';
+import {confirmRenameChat, newChat, refreshSidebarChats, renderChatVault} from './chats.js?v=20260819-3';
+import {wireMarkdownActions} from './markdown.js?v=20260819-3';
+import {renderDocs} from './docs.js?v=20260819-3';
+import {renderProviders} from './providers.js?v=20260819-3';
+import {renderLocalAI} from './local-ai.js?v=20260819-3';
+import {renderModelRouter} from './model-router.js?v=20260819-3';
+import {renderMCP} from './mcp.js?v=20260819-3';
+import {configureTerminal, renderTerminal} from './terminal.js?v=20260819-3';
+import {renderFilesystem} from './filesystem.js?v=20260819-3';
+import {renderMemory} from './memory.js?v=20260819-3';
+import {renderCache} from './cache.js?v=20260819-3';
+import {renderUsage} from './usage.js?v=20260819-3';
+import {renderSettings} from './settings.js?v=20260819-3';
 
-const codingRoute = handler => async () => {
-  enterCodingWorkspace();
+const workspaceRoute = handler => async () => {
+  syncWorkspaceLayout(location.pathname);
   await handler();
 };
 
 const standardRoute = handler => async () => {
-  leaveCodingWorkspace();
+  syncWorkspaceLayout(location.pathname);
   await handler();
 };
 
@@ -34,8 +34,8 @@ export const ROUTES = {
   '/local-ai': standardRoute(renderLocalAI),
   '/model-router': standardRoute(renderModelRouter),
   '/mcp': standardRoute(renderMCP),
-  '/terminal': standardRoute(renderTerminal),
-  '/filesystem': codingRoute(renderFilesystem),
+  '/terminal': workspaceRoute(renderTerminal),
+  '/filesystem': workspaceRoute(renderFilesystem),
   '/memory': standardRoute(renderMemory),
   '/cache': standardRoute(renderCache),
   '/usage': standardRoute(renderUsage),
@@ -43,10 +43,7 @@ export const ROUTES = {
 };
 
 registerRoutes(ROUTES);
-configureTerminal({navigateToChat: async () => {
-  await navigate('/');
-  renderComposerItems();
-}});
+configureTerminal({navigateToChat: async () => { await navigate('/'); renderComposerItems(); }});
 
 function setChatSectionCollapsed(collapsed) {
   $('chat-section').classList.toggle('is-collapsed', collapsed);
@@ -60,6 +57,11 @@ function wireShellEvents() {
   $('sidebar-close').onclick = () => setSidebarOpen(false);
   $('sidebar-scrim').onclick = () => setSidebarOpen(false);
   document.addEventListener('click', event => {
+    const openFile = event.target.closest('[data-open-workspace-file]');
+    if (openFile) {
+      window.dispatchEvent(new CustomEvent('zevora:open-workspace-file', {detail:{path:openFile.dataset.openWorkspaceFile}}));
+      return;
+    }
     const link = event.target.closest('[data-route]');
     if (!link) return;
     const href = link.getAttribute('href');
@@ -96,7 +98,7 @@ function wireShellEvents() {
 }
 
 setChatSectionCollapsed(localStorage.getItem('zevora.sidebar.chatsCollapsed') === 'true');
-initWorkspaceShell();
+initWorkspaceShell({openFullChat: () => navigate('/')});
 initTerminalWorkspace();
 wireShellEvents();
 syncWorkspaceAccess();

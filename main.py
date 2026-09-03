@@ -48,6 +48,7 @@ from agent.evolution.contribution import ContributionQueue
 from agent.evolution.engine import EvolutionEngine
 from agent.skills.openclaw import OpenClawSkillSource
 from agent.skills.registry import SkillRegistry
+from agent.skills.security_research import build_security_research_skill
 from agent.storage.cleanup import CleanupManager
 from agent.storage.context_economy import (
     build_context as build_economic_context,
@@ -71,6 +72,9 @@ local_manager = LocalIntelligenceManager()
 intelligence_engine = LocalIntelligenceEngine(settings.database_file)
 basic_skills  = OpenClawSkillSource()
 skill_registry = SkillRegistry()
+# Register the bundled, defensive security-research skill so it is available to
+# the dynamic skill router. replace=True keeps startup idempotent across restarts.
+skill_registry.register(build_security_research_skill(), replace=True)
 evolution_engine = EvolutionEngine(store, skill_registry)
 contribution_queue = ContributionQueue(store)
 storage_manager   = StorageManager(ROOT)
