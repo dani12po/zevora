@@ -177,10 +177,11 @@ async def api_http_error(_: Request, error: HTTPException):
 
 @app.exception_handler(Exception)
 async def api_unexpected_error(_: Request, error: Exception):
+    # The gateway logs the full error; never surface raw Python internals to users.
     return JSONResponse(status_code=500, content={
         'ok': False,
         'error': {'code': 'INTERNAL_ERROR',
-                  'message': f'Unexpected gateway error: {type(error).__name__}'},
+                  'message': 'An unexpected gateway error occurred. Retry the request; restart the gateway if it continues.'},
     })
 
 class AttachmentRequest(BaseModel):
@@ -1207,8 +1208,8 @@ async def _execute_chat_request(body: ChatRequest, request_id: str) -> dict:
             _progress_update(request_id, 'CANCELLED', 'Request cancelled', 'cancelled')
             _progress_finish(request_id, 'cancelled')
         raise
-    except Exception as error:
-        _progress_update(request_id, 'FAILED', f'Request failed: {type(error).__name__}', 'failed')
+    except Exception:
+        _progress_update(request_id, 'FAILED', 'Request failed during processing', 'failed')
         _progress_finish(request_id, 'failed')
         raise
     finally:
@@ -1239,7 +1240,7 @@ async def _stream_error(error: Exception) -> dict:
             'message': payload.get('message', 'Gateway request failed'),
             **{key: value for key, value in payload.items() if key not in {'code', 'message'}},
         }
-    return {'code': 'INTERNAL_ERROR', 'message': f'Unexpected gateway error: {type(error).__name__}'}
+    return {'code': 'INTERNAL_ERROR', 'message': 'An unexpected gateway error occurred. Retry the request.'}
 
 
 @app.post('/api/chat/stream')
@@ -2155,6 +2156,7 @@ async def task(body: TaskRequest):
         store.put_cache(
             prompt, response, provider_name, model, task_type.value,
             body.project, context_hash=context_hash, model_signature=cache_sig,
+            ttl_hours=settings.cache_default_ttl_hours,
         )
     store.add_memory('conversation', prompt, body.project, task_type.value)
     elapsed = int((perf_counter() - started) * 1000)

@@ -28,8 +28,11 @@ const navByPath = {
 
 export async function api(path, options = {}) {
   const controller = new AbortController();
-  const timeoutMs = path === '/health' ? 3000 : path === '/api/chat' ? 75000 : 15000;
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  // Agent/tool workflows routinely exceed a minute; only health keeps a tight
+  // timeout, and long chat requests are left to stream/poll with no artificial cap.
+  const timeoutMs = path === '/health' ? 3000 : path === '/api/chat' ? 0 : 15000;
+  // timeoutMs === 0 disables timeout (long agent/tool requests).
+  const timeout = timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : null;
   try {
     const response = await fetch(gatewayBase + path, {
       ...options,
@@ -80,9 +83,13 @@ export function userErrorMessage(error, fallback = 'The request could not be com
 }
 
 export function escapeHtml(value) {
-  const node = document.createElement('div');
-  node.textContent = value ?? '';
-  return node.innerHTML;
+  const string = String(value ?? '');
+  return string
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 export function fmtBytes(bytes) {

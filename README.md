@@ -55,11 +55,12 @@ second model or tool execution. Every event has a monotonic `sequence`, UTC
 redacted `message`. The UI groups the journal into Agent activity and keeps the
 ordinary assistant answer as a separate final response.
 
-Public lifecycle events include `stage_started`, `stage_completed`,
-`stage_failed`, `analysis_*`, `planning_*`, `tool_*`, `file_*`, `command_*`,
-`verification_*`, `debug_*`, `provider_selected`, `provider_fallback`,
-`memory_retrieved`, `cache_hit`, `cache_miss`, `final_preparing`, `final_ready`,
-and terminal workflow events. Event payloads contain bounded operational metadata
+Public lifecycle events include `stage_started`, `stage_completed`, `stage_failed`,
+`provider_selected`, `provider_fallback`, `tool_started`, `tool_completed`,
+`command_started`, `command_completed`, `file_created`, `file_modified`,
+`file_deleted`, `file_moved`, `file_copied`, `verification_started`,
+`verification_passed`, `verification_failed`, `verification_skipped`,
+and terminal workflow events (`cancelled`). Event payloads contain bounded operational metadata
 such as tool names, paths, byte counts, line counts, provider identifiers, and
 verification counts. They never contain private chain-of-thought, full source
 contents, credentials, or unredacted secret-like strings.
