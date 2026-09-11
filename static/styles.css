@@ -765,3 +765,14 @@ menu button[value="default"]:hover{background:var(--accent-hover)}
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}
 }
+/* Chat mode segment + composer plus-menu (Ask/Auto/Coding). */
+.chat-mode-segment{display:flex;flex-shrink:0;border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden}
+.chat-mode-segment button{height:28px;padding:0 10px;background:transparent;border:0;color:var(--text2);font-size:11px;font-weight:600;cursor:pointer}
+.chat-mode-segment button+button{border-left:1px solid var(--border)}
+.chat-mode-segment button:hover{color:var(--text);background:var(--surface2)}
+.chat-mode-segment button.active{background:var(--accent-dim);color:var(--accent)}
+.composer-tools{position:relative}
+.composer-menu{position:absolute;left:64px;bottom:36px;z-index:40;min-width:220px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:6px;box-shadow:0 12px 32px rgba(0,0,0,.45)}
+.composer-menu button{display:flex;justify-content:space-between;align-items:center;gap:12px;width:100%;padding:8px 10px;background:transparent;border:0;border-radius:6px;color:var(--text);font-size:12px;cursor:pointer;text-align:left}
+.composer-menu button:hover{background:var(--surface2)}
+.composer-menu .menu-hint{color:var(--text3);font-size:11px}

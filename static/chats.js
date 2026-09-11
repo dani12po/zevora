@@ -205,7 +205,7 @@ export function appendMessage(role, text, meta = {}) {
 }
 
 export async function newChat() {
-  const chat = await api('/api/chats', {method:'POST', body:JSON.stringify({title:'New chat', project_id:$('project-select').value || null})});
+  const chat = await api('/api/chats', {method:'POST', body:JSON.stringify({title:'New chat', project_id:Number($('project-select').value) || null})});
   state.activeChat = chat.id;
   await navigate('/', {replace: location.pathname === '/'});
   $('messages').innerHTML = ''; $('prompt').focus(); await refreshSidebarChats();

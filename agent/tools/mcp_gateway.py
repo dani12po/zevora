@@ -190,15 +190,35 @@ class LocalMCPGateway:
             return 'RESTRICTED', parts
         safe_python_module = (
             executable in {'python', 'python.exe', 'py'}
-            and lowered[1:2] == ['-m']
-            and lowered[2:3] in (['pytest'], ['compileall'])
+            and lowered[1:3] == ['-m', 'compileall']
+            and len(lowered) == 3
+        )
+        # `python -m pytest` may carry inert verbosity flags only; anything
+        # else (module names, -k expressions, paths) needs explicit approval.
+        safe_pytest = (
+            executable in {'python', 'python.exe', 'py'}
+            and lowered[1:3] == ['-m', 'pytest']
+            and set(lowered[3:]) <= {'-q', '-v', '--tb=short', '--tb=line'}
+        )
+        # `node --check <file>` only parses; it never executes. Allow exactly
+        # one non-flag argument so `node evil.js --version`-style smuggling
+        # (extra positionals / flags) cannot ride along.
+        node_tail = lowered[1:]
+        safe_node_check = (
+            executable in {'node', 'node.exe'}
+            and len(node_tail) == 2
+            and node_tail[0] == '--check'
+            and not node_tail[1].startswith('-')
+            and '..' not in Path(node_tail[1]).parts
         )
         safe = (
-            (executable in {'npm', 'npm.cmd'} and (lowered[1:2] == ['test'] or lowered[1:3] == ['run', 'build']))
-            or (executable in {'python', 'python.exe', 'py'} and '--version' in lowered)
+            (executable in {'npm', 'npm.cmd'} and (lowered[1:] == ['test'] or lowered[1:] == ['run', 'build']))
+            or (executable in {'python', 'python.exe', 'py'} and lowered[1:] == ['--version'])
             or safe_python_module
-            or (executable in {'node', 'node.exe'} and ('--check' in lowered or '--version' in lowered))
-            or (executable in {'git', 'git.exe'} and lowered[1:2] in (['status'], ['diff'], ['log']))
+            or safe_pytest
+            or (executable in {'node', 'node.exe'} and lowered[1:] == ['--version'])
+            or safe_node_check
+            or (executable in {'git', 'git.exe'} and lowered[1:] in (['status'], ['diff'], ['log'], ['log', '--oneline'], ['log', '--stat']))
         )
         if not safe:
             raise ValueError('Command is not in the workspace command allowlist')

@@ -21,7 +21,8 @@ def _provider_config() -> dict:
 
 def _built_in_default_model(name: str) -> str:
     return {
-        'local': settings.local_model_name,
+        'local': settings.active_local_model_profile.model_id,
+        'local_remote': settings.remote_local_model or settings.active_local_model_profile.model_id,
         'openai': settings.openai_model,
         'xai': settings.xai_model,
         'nvidia': settings.nvidia_model,
@@ -82,6 +83,13 @@ def provider_factories() -> dict:
     }.get(local_runtime, lambda: LocalProvider(provider_policy('local')['default_model']))
     built_in = {
         'local': local_factory,
+        # Remote Lexi deployment (external llama.cpp server, OpenAI-compatible).
+        # Disabled by default; enable by configuring REMOTE_LOCAL_BASE_URL.
+        'local_remote': lambda: LocalEndpointProvider(
+            provider_policy('local_remote')['default_model']
+            or settings.remote_local_model
+            or settings.active_local_model_profile.model_id
+        ),
         'openai': lambda: OpenAICompatibleProvider(
             'openai', settings.openai_api_key, settings.openai_base_url,
             provider_policy('openai')['default_model'], provider_policy('openai')['supports_vision']
@@ -114,16 +122,30 @@ def provider_factories() -> dict:
 
 def get_provider(name: str):
     try:
-        return provider_factories()[name.lower()]()
+        factory = provider_factories()[name.lower()]
     except KeyError:
         raise ValueError(f'Unsupported provider: {name}')
+    try:
+        return factory()
+    except Exception as error:
+        # A stored misconfiguration (e.g. an unreachable base URL saved
+        # before save-time validation) must surface as an unavailable
+        # provider, never as an unhandled construction crash.
+        raise ValueError(f'Provider unavailable: {name}: {error}') from error
 
 
 def configured_providers() -> list[dict]:
     providers = []
     for name, factory in provider_factories().items():
-        provider = factory()
-        policy = provider_policy(name)
-        configured = getattr(provider, 'configured', lambda: False)()
-        providers.append({'provider': name, 'configured': configured, **policy})
+        try:
+            provider = factory()
+            policy = provider_policy(name)
+            configured = getattr(provider, 'configured', lambda: False)()
+            providers.append({'provider': name, 'configured': configured, **policy})
+        except Exception:
+            providers.append({
+                'provider': name, 'configured': False,
+                'health_status': 'unavailable',
+                **provider_policy(name),
+            })
     return providers

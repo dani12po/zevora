@@ -108,12 +108,12 @@ def test_runtime_test_passes_approval(provider_service, capsys):
     assert json.loads(capsys.readouterr().out)['success'] is True
 
 
-def test_local_command_reports_qwen_model(capsys):
+def test_local_command_reports_lexi_model(capsys):
     main(['local'])
     payload = json.loads(capsys.readouterr().out)
     assert payload['provider'] == 'local'
-    assert payload['model_id'] == 'qwen3.8-flash-next'
-    assert payload['display_name'] == 'Qwen3.8-Flash-Next'
-    assert payload['repository'] == 'unsloth/Qwen3.8-Flash-Next-GGUF'
-    assert payload['quant'] == 'UD-Q4_K_XL'
+    assert payload['model_id'] == 'lexi-llama-3-8b-q4_k_m'
+    assert payload['display_name'] == 'Lexi Llama 3 8B Q4_K_M'
+    assert payload['repository'] == 'bartowski/Lexi-Llama-3-8B-Uncensored-GGUF'
+    assert payload['quant'] == 'Q4_K_M'
     assert payload['cache_signature']

@@ -11,6 +11,7 @@ export async function renderMemory() {
 export async function runIntelligenceMaintenance(execute) {
   if (execute && !confirm('Delete the retention candidates shown by the current policy?')) return;
   const message = $('intelligence-maintenance-msg');
+  if (!message) return;
   message.textContent = execute ? 'Deleting...' : 'Calculating...';
   try {
     const result = await api(`/api/maintenance/intelligence?execute=${execute ? 'true' : 'false'}`, {method:'POST'});

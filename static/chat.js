@@ -1,6 +1,7 @@
 import {$, api, emptyState, escapeHtml, fmtBytes, navigate, setMessages, state, stateIndicator, userErrorMessage} from './core.js?v=20260819-3';
 import {appendMessage, cancelReveals, configureMessageActions, newChat, refreshSidebarChats, replaceAssistantMessage} from './chats.js?v=20260819-3';
 import {ensureWorkspaceChatOpen} from './workspace.js?v=20260819-3';
+import {getChatMode, setChatMode, parseSlashCommand, renderSkillsMessage, routeCodingPrompt} from './chatmode.js?v=20260819-3';
 
 const LIMITS = {image:8_000_000,pdf:12_000_000,text:2_000_000};
 let projectSelectionGeneration = 0;
@@ -59,7 +60,7 @@ export async function createProject() { const name=$('new-project-name').value.t
 function attachmentKind(file){if(file.type.startsWith('image/'))return'image';if(file.type==='application/pdf'||file.name.toLowerCase().endsWith('.pdf'))return'pdf';return'text';}
 function fileBase64(file){return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',',2)[1]||'');reader.onerror=()=>reject(new Error(`Unable to read ${file.name}`));reader.readAsDataURL(file);});}
 function mentionedFiles(){return [...$('prompt').value.matchAll(/@([^\s,;]+)/g)].map(match=>match[1]).slice(0,12);}
-export function renderComposerItems(){const host=$('composer-items');const attachments=state.pendingAttachments.map((item,index)=>`<span class="composer-chip">${escapeHtml(item.name)} <small>${fmtBytes(item.size)}</small><button type="button" data-remove-attachment="${index}">x</button></span>`);const actions=state.pendingActions.map((item,index)=>`<span class="composer-chip action-chip">${escapeHtml(item.tool)}<button type="button" data-remove-action="${index}">x</button></span>`);const mentions=mentionedFiles().map(path=>`<span class="composer-chip mention-chip">@${escapeHtml(path)}</span>`);host.innerHTML=[...attachments,...actions,...mentions].join('');host.classList.toggle('hidden',!host.innerHTML);host.querySelectorAll('[data-remove-attachment]').forEach(button=>button.onclick=()=>{state.pendingAttachments.splice(Number(button.dataset.removeAttachment),1);renderComposerItems();});host.querySelectorAll('[data-remove-action]').forEach(button=>button.onclick=()=>{state.pendingActions.splice(Number(button.dataset.removeAction),1);renderComposerItems();});}
+export function renderComposerItems(){const host=$('composer-items');const attachments=state.pendingAttachments.map((item,index)=>`<span class="composer-chip">${escapeHtml(item.name)} <small>${fmtBytes(item.size)}</small><button type="button" aria-label="Remove attachment" data-remove-attachment="${index}">x</button></span>`);const actions=state.pendingActions.map((item,index)=>`<span class="composer-chip action-chip">${escapeHtml(item.tool)}<button type="button" aria-label="Remove action" data-remove-action="${index}">x</button></span>`);const mentions=mentionedFiles().map(path=>`<span class="composer-chip mention-chip">@${escapeHtml(path)}</span>`);host.innerHTML=[...attachments,...actions,...mentions].join('');host.classList.toggle('hidden',!host.innerHTML);host.querySelectorAll('[data-remove-attachment]').forEach(button=>button.onclick=()=>{state.pendingAttachments.splice(Number(button.dataset.removeAttachment),1);renderComposerItems();});host.querySelectorAll('[data-remove-action]').forEach(button=>button.onclick=()=>{state.pendingActions.splice(Number(button.dataset.removeAction),1);renderComposerItems();});}
 export async function addAttachments(files){const selected=[...files];if(state.pendingAttachments.length+selected.length>8)throw new Error('A maximum of 8 attachments is allowed');for(const file of selected){const kind=attachmentKind(file),limit=LIMITS[kind];if(file.size>limit)throw new Error(`${file.name} exceeds the ${fmtBytes(limit)} ${kind} limit`);state.pendingAttachments.push({name:file.name,media_type:file.type||'text/plain',data_base64:await fileBase64(file),size:file.size});}renderComposerItems();}
 function actionTemplate(tool){return({execute_command:{command:'python -m pytest -q'},git:{operation:'status'},search_files:{query:'',pattern:'*.ts'},create_file:{path:'',content:''},write_file:{path:'',content:''},edit_file:{path:'',old_text:'',new_text:''},move_file:{source:'',destination:''},copy_file:{source:'',destination:''}})[tool]||{path:''};}
 export function openActionDialog(){if(!$('project-select').value){$('route-status').textContent='Select a project before adding actions';return;}$('action-arguments').value=JSON.stringify(actionTemplate($('action-tool').value),null,2);$('action-purpose').value='';$('action-error').classList.add('hidden');$('action-dialog').showModal();}
@@ -110,7 +111,12 @@ async function streamChat(payload, onEvent) {
         buffer = buffer.slice(boundary + 2);
         const data = frame.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
         if (!data) continue;
-        const event = JSON.parse(data);
+        let event;
+        try {
+          event = JSON.parse(data);
+        } catch {
+          continue;
+        }
         resetIdleTimer();
         if (event.type === 'workflow') {
           if (event.sequence && event.sequence <= lastSequence) continue;
@@ -163,7 +169,7 @@ export async function regenerateResponse(content, meta, message, originalText) {
     const data = await api(`/api/chats/${encodeURIComponent(meta.chat_id)}/messages/${meta.message_id}/regenerate`, {
       method: 'POST',
       body: JSON.stringify({
-        content, mode: $('routing-override')?.value || 'auto',
+        content, mode: $('routing-override')?.value || 'auto', chat_mode: getChatMode(),
         provider: $('routing-provider')?.value || null, model: $('routing-model')?.value || null,
         attachments: [], actions: [],
       }),
@@ -180,34 +186,45 @@ export async function regenerateResponse(content, meta, message, originalText) {
 
 configureMessageActions({regenerate: regenerateResponse});
 
-async function routeCodingPrompt(content) {
-  if (!content) return {coding:false, workspace:false, route:null, task_types:[]};
-  try {
-    const decision = await api(`/api/route?prompt=${encodeURIComponent(content)}`);
-    const taskTypes = new Set(decision.task_type || []);
-    const tools = decision.tools || [];
-    const codingRequest = taskTypes.has('coding')
-      || taskTypes.has('debugging')
-      || taskTypes.has('tool_task')
-      || tools.some(tool => tool === 'filesystem.read' || tool === 'terminal.execute' || tool === 'project.create');
-    return {coding:codingRequest, workspace:codingRequest && Boolean($('project-select').value), route:codingRequest ? '/filesystem' : null, task_types:[...taskTypes]};
-  } catch (_) {
-    // Classification is an enhancement; the canonical chat request remains available.
-  }
-  return {coding:false, workspace:false, route:null, task_types:[]};
-}
-
 export async function send(replay=null){
-  const content=replay?.content||$('prompt').value.trim();
+  let content=replay?.content||$('prompt').value.trim();
   if(!content||state.isSending)return;
   cancelReveals();
-  const routeDecision=await routeCodingPrompt(content);
+  // Leading slash commands override the segmented mode for this message.
+  let slashMode = null;
+  if (!replay) {
+    const parsed = parseSlashCommand(content);
+    if (parsed.kind === 'local') {
+      if(!state.activeChat)await newChat();
+      appendMessage('user', content, {});
+      appendMessage('assistant', parsed.markdown, {reveal: true});
+      $('prompt').value='';resizePrompt();
+      return;
+    }
+    if (parsed.kind === 'skills') {
+      if(!state.activeChat)await newChat();
+      appendMessage('user', content, {});
+      await renderSkillsMessage();
+      $('prompt').value='';resizePrompt();
+      return;
+    }
+    slashMode = parsed.mode;
+    content = parsed.content.trim();
+    if (!content) {
+      // Bare "/ask" or "/coding": adopt the mode, keep typing.
+      if (slashMode) setChatMode(slashMode);
+      $('prompt').value='';resizePrompt();
+      return;
+    }
+  }
+  const chatMode = slashMode || replay?.chat_mode || getChatMode();
+  const routeDecision=await routeCodingPrompt(content, chatMode);
   if(!state.gatewayReady&&!await checkGateway()){$('route-status').textContent='Gateway offline';return;}
-  const request=replay||{content,attachments:state.pendingAttachments.map(({name,media_type,data_base64})=>({name,media_type,data_base64})),actions:state.pendingActions.map(action=>({...action}))};
+  const request=replay?.content?{...replay,chat_mode:chatMode}:{content,chat_mode:chatMode,attachments:state.pendingAttachments.map(({name,media_type,data_base64})=>({name,media_type,data_base64})),actions:state.pendingActions.map(action=>({...action}))};
   state.isSending=true;syncComposerState();let userMessage=null,waiting=null,stopProgress=()=>{};
   try{
     if(!state.activeChat)await newChat();
-    const projectId=$('project-select').value||null;
+    const projectId=Number($('project-select').value)||null;
     const requestId=newProgressId();activeRequestId=requestId;syncComposerState();
     if(!request.retrying)userMessage=appendMessage('user',content,{attachments:request.attachments});
     if(routeDecision.workspace){
@@ -215,13 +232,13 @@ export async function send(replay=null){
       if (!state.workspaceMode) await navigate(routeDecision.route);
       ensureWorkspaceChatOpen();
     } else if (routeDecision.coding && !$('project-select').value) {
-      $('route-status').textContent='Project folder required - open a folder before workspace actions';
+      $('route-status').textContent='Project folder required - open a folder before workspace actions (or switch to Ask mode for Q&A)';
     }
     $('prompt').value='';resizePrompt();
     const activity=request.actions.length?'Running workspace actions':'Generating response';
     $('route-status').textContent=request.actions.length?'Step 2 of 3 - Running actions':'Generating response';
     if(waiting)waiting.setTypingStatus(activity);else waiting=appendMessage('assistant',activity,{typing:true});
-    const payload={message:content,request_id:requestId,conversation_id:state.activeChat,project_id:projectId,mode:$('routing-override')?.value||'auto',provider:$('routing-provider')?.value||null,model:$('routing-model')?.value||null,attachments:request.attachments,actions:request.actions};
+    const payload={message:content,request_id:requestId,conversation_id:state.activeChat,project_id:chatMode==='ask'?null:projectId,mode:$('routing-override')?.value||'auto',chat_mode:chatMode,provider:$('routing-provider')?.value||null,model:$('routing-model')?.value||null,attachments:request.attachments,actions:chatMode==='ask'?[]:request.actions};
     let data;
     try {
       data=await streamChat(payload,event=>{ waiting.setWorkflowEvent?.(event); window.dispatchEvent(new CustomEvent('zevora:workflow-event', {detail:event})); });
@@ -264,6 +281,10 @@ async function cancelActiveRequest(){
 export async function approvePendingActions(event){event.preventDefault();if(!state.pendingApprovalRequest)return;const indexes=new Set(state.pendingApprovalRequest.approvalIndexes||[]);state.pendingApprovalRequest.actions=state.pendingApprovalRequest.actions.map((action,index)=>({...action,approved:action.approved||indexes.has(index)}));const{approvalIndexes,...replay}=state.pendingApprovalRequest;$('approval-dialog').close();state.pendingApprovalRequest=null;await send(replay);}
 
 async function refreshRoutingSelectors(){const mode=$('routing-override');if(!mode)return;const models=await api('/api/models').catch(()=>[]),providers=[...new Set(models.map(item=>item.provider))];$('routing-provider').innerHTML=providers.map(item=>`<option>${escapeHtml(item)}</option>`).join('');const sync=()=>{$('routing-model').innerHTML=models.filter(item=>item.provider===$('routing-provider').value).map(item=>`<option value="${escapeHtml(item.model_id)}">${escapeHtml(item.model_id)}</option>`).join('');};$('routing-provider').onchange=sync;sync();mode.onchange=()=>{const explicit=['provider','model'].includes(mode.value);$('routing-provider').classList.toggle('hidden',!explicit);$('routing-model').classList.toggle('hidden',mode.value!=='model');};mode.onchange();}
-export function renderChat(){ $('composer').classList.remove('hidden');refreshRoutingSelectors();$('chat-title').textContent=state.activeChat?'Chat':'What are you building?';if(!state.activeChat){setMessages(`<div class="empty">${stateIndicator('local','Local workspace')}<b>ZEVORA</b><p>Open a project folder, then ask the agent to create, edit, inspect, or test files.</p><div class="actions"><button id="chat-open-project">Open folder</button><button id="chat-create-project">Create project</button></div><a class="empty-docs" href="/docs" data-route>Read the quick start</a></div>`);$('chat-open-project').onclick=()=>$('project-dialog').showModal();$('chat-create-project').onclick=()=>$('create-dialog').showModal();}syncWorkspaceAccess();}
+export function renderChat(){ $('composer').classList.remove('hidden');refreshRoutingSelectors();setChatMode(getChatMode());$('chat-title').textContent=state.activeChat?'Chat':'What are you building?';if(!state.activeChat){setMessages(`<div class="empty">${stateIndicator('local','Local workspace')}<b>ZEVORA</b><p>Open a project folder, then ask the agent to create, edit, inspect, or test files.</p><div class="actions"><button id="chat-open-project">Open folder</button><button id="chat-create-project">Create project</button></div><a class="empty-docs" href="/docs" data-route>Read the quick start</a></div>`);$('chat-open-project').onclick=()=>$('project-dialog').showModal();$('chat-create-project').onclick=()=>$('create-dialog').showModal();}syncWorkspaceAccess();}
 
-export function wireChatEvents(){ $('project-select').onchange=()=>{beginProjectSelection();syncWorkspaceAccess();};$('composer').onsubmit=event=>{event.preventDefault();send();};$('stop-request').onclick=cancelActiveRequest;$('prompt').oninput=()=>{renderComposerItems();resizePrompt();};$('prompt').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send();}};resizePrompt();$('attach-file').onclick=()=>$('file-input').click();$('file-input').onchange=async event=>{try{await addAttachments(event.target.files);}catch(error){$('route-status').textContent=userErrorMessage({code:'INVALID_ATTACHMENT',message:error.message});}finally{event.target.value='';}};$('add-action').onclick=openActionDialog;$('action-tool').onchange=event=>{$('action-arguments').value=JSON.stringify(actionTemplate(event.target.value),null,2);};$('confirm-add-action').onclick=addStructuredAction;$('approve-actions').onclick=approvePendingActions;$('reject-actions').onclick=()=>{state.pendingApprovalRequest=null;};}
+export function wireChatEvents(){ $('project-select').onchange=()=>{beginProjectSelection();syncWorkspaceAccess();};$('composer').onsubmit=event=>{event.preventDefault();send();};$('stop-request').onclick=cancelActiveRequest;$('prompt').oninput=()=>{renderComposerItems();resizePrompt();};$('prompt').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send();}};resizePrompt();$('attach-file').onclick=()=>$('file-input').click();$('file-input').onchange=async event=>{try{await addAttachments(event.target.files);}catch(error){$('route-status').textContent=userErrorMessage({code:'INVALID_ATTACHMENT',message:error.message});}finally{event.target.value='';}};$('add-action').onclick=openActionDialog;$('action-tool').onchange=event=>{$('action-arguments').value=JSON.stringify(actionTemplate(event.target.value),null,2);};$('confirm-add-action').onclick=addStructuredAction;$('approve-actions').onclick=approvePendingActions;$('reject-actions').onclick=()=>{state.pendingApprovalRequest=null;};
+document.querySelectorAll('[data-chat-mode]').forEach(button=>{button.onclick=()=>setChatMode(button.dataset.chatMode);});
+const menu=$('composer-menu');$('composer-plus').onclick=event=>{event.stopPropagation();menu?.classList.toggle('hidden');};document.addEventListener('click',event=>{if(!menu?.classList.contains('hidden')&&!event.target.closest('#composer-menu')&&!event.target.closest('#composer-plus'))menu.classList.add('hidden');});
+menu?.querySelectorAll('[data-menu]').forEach(item=>{item.onclick=()=>{menu.classList.add('hidden');const kind=item.dataset.menu;if(kind==='attach')$('file-input').click();else if(kind==='action')openActionDialog();else if(kind==='skills'||kind==='help'){const prompt=$('prompt');prompt.value=`/${kind} `;prompt.focus();resizePrompt();}};});
+}

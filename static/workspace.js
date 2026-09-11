@@ -7,7 +7,9 @@ const KEYS = {
 };
 
 function numberSetting(key, fallback, min, max) {
-  const value = Number(localStorage.getItem(key));
+  const raw = localStorage.getItem(key);
+  if (raw === null) return fallback;
+  const value = Number(raw);
   return Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
 }
 

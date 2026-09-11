@@ -26,6 +26,8 @@ function renderTabs() {
     const button = document.createElement('button');
     button.type = 'button'; button.className = `terminal-tab${tab.id === activeTabId ? ' active' : ''}`;
     button.textContent = tab.title; button.title = tab.title;
+    button.setAttribute('role', 'tab');
+    button.setAttribute('aria-selected', tab.id === activeTabId ? 'true' : 'false');
     button.onclick = () => activateTab(tab.id);
     host.append(button);
   }

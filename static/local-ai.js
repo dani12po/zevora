@@ -1,9 +1,10 @@
-import {api, badge, escapeHtml, fmtBytes, pageWrap, setPanel, stateIndicator} from './core.js?v=20260819-3';
+import {$, api, badge, escapeHtml, fmtBytes, pageWrap, setPanel, stateIndicator, userErrorMessage} from './core.js?v=20260819-3';
 
 export async function renderLocalAI() {
-  const [health, storage, memory, stats, intelligence, evolution] = await Promise.all([
+  const [health, storage, memory, stats, intelligence, evolution, lexi] = await Promise.all([
     api('/api/health'), api('/api/storage'), api('/api/memory'), api('/api/stats'),
     api('/api/intelligence').catch(() => ({})), api('/api/evolution/status').catch(() => ({})),
+    api('/api/local-model/status').catch(() => null),
   ]);
   const resources = health.local_resource || {};
   const categories = memory.categories || {};
@@ -35,6 +36,20 @@ export async function renderLocalAI() {
       <div class="card-sm card"><div class="card-lbl">Collective learning</div><div class="card-val compact-value">${evolution.collective_learning?.enabled ? 'Enabled' : 'Disabled'}</div></div>
       <div class="card-sm card"><div class="card-lbl">Update verification</div><div class="card-val compact-value">${escapeHtml(evolution.updates?.verification || 'unknown')}</div></div>
     </div></div>
+    <div class="card"><b>Lexi local model</b><div class="card-grid section-grid">
+      <div class="card-sm card"><div class="card-lbl">Embedded</div><div class="card-val compact-value">${lexi?.embedded ? `${escapeHtml(lexi.embedded.display_name || '')} - ${escapeHtml(lexi.embedded.state || '')}` : 'Unavailable'}</div></div>
+      <div class="card-sm card"><div class="card-lbl">GGUF size</div><div class="card-val">${lexi?.embedded?.model_size_mb ? `${lexi.embedded.model_size_mb} MB` : '-'}</div></div>
+      <div class="card-sm card"><div class="card-lbl">Remote</div><div class="card-val compact-value">${lexi?.remote?.base_url ? escapeHtml(lexi.remote.base_url) : 'Not configured'}</div></div>
+      <div class="card-sm card"><div class="card-lbl">Remote latency</div><div class="card-val">${lexi?.remote?.last_latency_ms != null ? `${lexi.remote.last_latency_ms} ms` : '-'}</div></div>
+    </div><div class="provider-save"><span class="save-msg" id="lexi-manage-msg"></span><button class="btn-sm" id="lexi-unload">Unload</button><button class="btn-sm" id="lexi-restart">Restart</button></div>
+    <p class="muted-copy">Managed GGUF files are never deleted automatically; removal requires explicit approval in Providers. Configure the remote endpoint in <a href="/providers" data-route class="accent-link">Providers</a>.</p></div>
     <div class="card"><b>Active providers</b><p class="muted-copy technical-text">${providers}</p><p class="muted-copy">Configure provider API keys in <a href="/providers" data-route class="accent-link">Providers</a>.</p></div>`,
   ));
+  const manageMsg = (text, isError) => { const el = $('lexi-manage-msg'); if (!el) return; el.textContent = text; el.classList.toggle('error-text', !!isError); el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 3000); };
+  const manage = async (action) => {
+    try { const result = await api(`/api/local-model/${action}`, {method: 'POST'}); manageMsg(`${action}: ${result.released !== undefined ? (result.released ? 'released' : 'already idle') : 'ok'}`); }
+    catch (error) { manageMsg(userErrorMessage(error), true); }
+  };
+  if ($('lexi-unload')) $('lexi-unload').onclick = () => manage('unload');
+  if ($('lexi-restart')) $('lexi-restart').onclick = () => manage('restart');
 }

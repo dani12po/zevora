@@ -1,4 +1,10 @@
-# ZEVORA — Qwen Local Coding Agent Audit
+# ZEVORA — Qwen Local Coding Agent Audit (HISTORICAL — superseded by Lexi)
+
+> Historical record. The bundled local model migrated from Qwen3.8-Flash-Next
+> (`unsloth/Qwen3.8-Flash-Next-GGUF`, `UD-Q4_K_XL`) to Lexi Llama 3 8B Q5_K_M
+> (`bartowski/Lexi-Llama-3-8B-Uncensored-GGUF`). See `docs/LEXI_LLAMA.md` for
+> the current integration. This document is kept for migration archaeology only;
+> no active default path depends on Qwen.
 
 Target upgrade: make **Qwen3.8-Flash-Next GGUF** the first-class local reasoning engine
 provided through llama.cpp, while preserving ZEVORA's existing architecture.

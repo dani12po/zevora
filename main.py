@@ -28,6 +28,7 @@ from agent.providers.errors import (
     ProviderUnavailableError,
     failure_details,
 )
+from agent.providers.local_endpoint_provider import remote_endpoint_status
 from agent.providers.local_provider import local_runtime_status
 from agent.providers.registry import get_provider
 from agent.providers.service import ProviderService
@@ -84,7 +85,7 @@ mcp_gateway       = LocalMCPGateway()
 terminal_sessions = TerminalSessionManager()
 hybrid_router     = AdaptiveHybridRouter()
 workspace_manager = WorkspaceManager(ROOT / 'data' / 'database' / 'workspace.db')
-_PROVIDER_CONFIG_LOCK = Lock()
+_PROVIDER_CONFIG_LOCK = asyncio.Lock()
 
 _AGENTIC_LOG_INSTRUCTION = '''
 Before answering, write a short workflow in a <agentic_log>...</agentic_log> block using bullet points,
@@ -135,8 +136,8 @@ app.add_middleware(
     allow_origins=['http://127.0.0.1:7432', 'http://localhost:7432',
                    'http://127.0.0.1:3000', 'http://localhost:3000'],
     allow_credentials=False,
-    allow_methods=['GET', 'POST', 'PUT', 'DELETE'],
-    allow_headers=['Content-Type'],
+    allow_methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+    allow_headers=['Content-Type', 'X-ZEVORA-Shutdown-Token'],
 )
 app.mount('/static', StaticFiles(directory=ROOT / 'static'), name='static')
 
@@ -203,6 +204,9 @@ class TaskRequest(BaseModel):
         default=ZEVORA_PERSONA, max_length=20_000
     )
     mode: str = Field(default='auto', max_length=32)
+    # See ChatMessageRequest.chat_mode: ask disables workspace planning and
+    # execution for this task, coding forces it, auto classifies per prompt.
+    chat_mode: str = Field(default='auto', max_length=16)
     provider: str | None = Field(default=None, max_length=80)
     model: str | None = Field(default=None, max_length=255)
     actions: list[AgentActionRequest] = Field(default_factory=list, max_length=30)
@@ -239,6 +243,10 @@ class ChatMessageRequest(BaseModel):
     content: str = Field(min_length=1,max_length=20000)
     progress_id: str | None = Field(default=None, max_length=80)
     mode: str = Field(default='auto', max_length=32)
+    # Conversation intent, independent from the routing override above:
+    # ask = pure Q&A (never plans or executes workspace actions),
+    # coding = force the workspace agent flow, auto = classify per message.
+    chat_mode: str = Field(default='auto', max_length=16)
     provider: str | None = Field(default=None, max_length=80)
     model: str | None = Field(default=None, max_length=255)
     attachments: list[AttachmentRequest] = Field(default_factory=list, max_length=8)
@@ -347,10 +355,22 @@ def evolution_status():
     return {
         'version': __version__,
         'local_intelligence': {
-            'runtime': settings.local_model_runtime,
+            'runtime': settings.active_local_model_profile.runtime,
             'enabled': settings.local_model_enabled,
             'package_directory': str(settings.local_model_package_dir),
-            'configured_model': settings.local_model_name,
+            'configured_model': settings.active_local_model_profile.model_id,
+            'display_name': settings.active_local_model_profile.display_name,
+            'repository': settings.active_local_model_profile.repository,
+            'filename': settings.active_local_model_profile.filename,
+            'quantization': settings.active_local_model_profile.quantization,
+            'context_length': settings.active_local_model_profile.context_length,
+            'deployments': {
+                'embedded': local_runtime_status(),
+                'remote': remote_endpoint_status(),
+            },
+            'resources': {
+                'ram_available_mb': resource['ram_available_mb'] if (resource := local_manager.resource_state()) else None,
+            },
             'installed_packages': model_registry.installed_local_packages(),
             'discovered_models': local_manager.discover_models(),
             'installation_choices': local_manager.installation_choices(),
@@ -386,6 +406,64 @@ def uninstall_local_intelligence(body: ApprovalRequest):
         raise HTTPException(400, {
             'code': 'UNINSTALL_PATH_REJECTED', 'message': str(error),
         }) from error
+
+
+@app.get('/api/local-model/status')
+async def local_model_status():
+    """Embedded + remote Lexi status with resource state (Phase 17)."""
+    from agent.providers.local_provider import LocalProvider
+    provider = LocalProvider()
+    return {
+        'embedded': local_runtime_status(),
+        'remote': remote_endpoint_status(),
+        'resources': local_manager.resource_state(),
+        'model': (await provider.list_models() or [None])[0],
+    }
+
+
+@app.post('/api/local-model/unload')
+async def local_model_unload():
+    from agent.providers.local_provider import LocalProvider
+    return await LocalProvider().unload()
+
+
+@app.post('/api/local-model/restart')
+async def local_model_restart():
+    from agent.providers.local_provider import LocalProvider
+    return await LocalProvider().restart()
+
+
+class LocalModelInstallRequest(BaseModel):
+    approved: bool = False
+    replace: bool = False
+    repository: str | None = None
+    filename: str | None = None
+
+
+@app.post('/api/local-model/install')
+async def local_model_install(body: LocalModelInstallRequest):
+    """Download ONLY the selected GGUF file (never the whole repository).
+
+    Requires explicit ``approved=true``. Never silently overwrites an existing
+    model file; pass ``replace=true`` for explicit replacement.
+    """
+    if not body.approved:
+        raise HTTPException(400, {
+            'code': 'INSTALL_APPROVAL_REQUIRED',
+            'message': 'Set approved=true to download the Lexi GGUF file.',
+        })
+    try:
+        return await asyncio.to_thread(
+            local_manager.install_model,
+            repository=body.repository,
+            filename=body.filename,
+            replace=body.replace,
+        )
+    except Exception as error:
+        raise HTTPException(400, {
+            'code': type(error).__name__.upper(),
+            'message': redact(str(error))[:300],
+        }) from error
 @app.get('/api/settings')
 def ui_settings():
     return {
@@ -396,8 +474,8 @@ def ui_settings():
     }
 @app.post('/api/settings')
 def update_ui_settings(body:SettingsUpdateRequest):
-    if body.routing_mode and body.routing_mode.upper() not in {'AUTO','LOCAL_ONLY','CLOUD_ONLY'}:
-        raise HTTPException(400,'routing_mode must be AUTO, LOCAL_ONLY, or CLOUD_ONLY')
+    if body.routing_mode and body.routing_mode.upper() not in {'AUTO','LOCAL_ONLY','REMOTE_LOCAL_ONLY','CLOUD_ONLY'}:
+        raise HTTPException(400,'routing_mode must be AUTO, LOCAL_ONLY, REMOTE_LOCAL_ONLY, or CLOUD_ONLY')
     config_file=ROOT/'config'/'ui_settings.json'; config_file.parent.mkdir(parents=True,exist_ok=True)
     try: saved=json.loads(config_file.read_text(encoding='utf-8'))
     except (OSError,json.JSONDecodeError): saved={}
@@ -461,15 +539,17 @@ def providers_config():
     KEY_MAP = {
         'openai': 'OPENAI_API_KEY', 'xai': 'XAI_API_KEY', 'nvidia': 'NVIDIA_API_KEY',
         'deepseek': 'DEEPSEEK_API_KEY', 'gemini': 'GEMINI_API_KEY', 'anthropic': 'ANTHROPIC_API_KEY',
+        'local_remote': 'REMOTE_LOCAL_API_KEY',
     }
     URL_MAP = {
         'openai': 'OPENAI_BASE_URL', 'xai': 'XAI_BASE_URL', 'nvidia': 'NVIDIA_BASE_URL',
         'deepseek': 'DEEPSEEK_BASE_URL', 'anthropic': 'ANTHROPIC_BASE_URL',
+        'local_remote': 'REMOTE_LOCAL_BASE_URL',
     }
     DEFAULT_URLS = {
         'openai': 'https://api.openai.com/v1', 'xai': 'https://api.x.ai/v1',
         'nvidia': 'https://integrate.api.nvidia.com/v1', 'deepseek': 'https://api.deepseek.com/v1',
-        'gemini': '', 'anthropic': 'https://api.anthropic.com',
+        'gemini': '', 'anthropic': 'https://api.anthropic.com', 'local_remote': '',
     }
     customs = cfg.get('custom_providers', [])
     for c in customs:
@@ -480,7 +560,7 @@ def providers_config():
         DEFAULT_URLS[name] = c.get('base_url', '')
 
     result = []
-    all_providers = ['local', 'openai', 'xai', 'nvidia', 'deepseek', 'gemini', 'anthropic'] + [c.get('name', '').lower() for c in customs if c.get('name')]
+    all_providers = ['local', 'local_remote', 'openai', 'xai', 'nvidia', 'deepseek', 'gemini', 'anthropic'] + [c.get('name', '').lower() for c in customs if c.get('name')]
 
     for name in all_providers:
         raw_key = env_vals.get(KEY_MAP.get(name, ''), '')
@@ -488,9 +568,11 @@ def providers_config():
         raw_url = env_vals.get(URL_MAP.get(name, ''), DEFAULT_URLS.get(name, ''))
         p = provider_cfg.get(name, {})
         runtime = local_runtime_status() if name == 'local' else None
+        remote = remote_endpoint_status() if name in {'local', 'local_remote'} else None
         result.append({
             'provider': name, 'key_masked': masked, 'key_set': bool(raw_key),
             'base_url': raw_url or DEFAULT_URLS.get(name, ''),
+            'remote_status': remote,
             'default_model': p.get('default_model') or {
                 'openai': env_vals.get('OPENAI_MODEL', 'gpt-4o-mini'),
                 'xai': env_vals.get('XAI_MODEL', 'grok-3-mini'),
@@ -521,19 +603,33 @@ async def update_provider_config(body: ProviderConfigRequest):
         parsed_url = urlparse(body.base_url.strip())
         if parsed_url.scheme not in {'http', 'https'} or not parsed_url.netloc:
             raise HTTPException(400, 'base_url must be an absolute HTTP(S) URL')
+        # Reject SSRF-prone endpoints at save time so a stored URL can never
+        # turn discovery/health into a 500. Cloud providers must be public;
+        # the remote-local adapter keeps loopback/LAN but never metadata IPs.
+        from agent.providers.ssrf import (
+            assert_local_endpoint_url,
+            assert_provider_base_url,
+        )
+        try:
+            if provider_name == 'local_remote':
+                assert_local_endpoint_url(body.base_url.strip())
+            else:
+                assert_provider_base_url(body.base_url.strip())
+        except ValueError as error:
+            raise HTTPException(400, str(error))
     model = body.default_model.strip() if body.default_model is not None else None
     if model == '':
         raise HTTPException(400, 'default_model cannot be empty')
 
     providers_cfg_file = ROOT / 'config' / 'providers.json'
     env_file = ROOT / '.env'
-    with _PROVIDER_CONFIG_LOCK:
+    async with _PROVIDER_CONFIG_LOCK:
         try:
             cfg = json.loads(providers_cfg_file.read_text(encoding='utf-8'))
         except (OSError, json.JSONDecodeError):
             cfg = {'providers': {}, 'model_overrides': {}}
         customs = cfg.get('custom_providers', [])
-        allowed = {'openai', 'xai', 'nvidia', 'deepseek', 'gemini', 'anthropic'}
+        allowed = {'openai', 'xai', 'nvidia', 'deepseek', 'gemini', 'anthropic', 'local_remote'}
         allowed.update(c.get('name', '').lower() for c in customs if c.get('name'))
         if provider_name not in allowed:
             raise HTTPException(400, f'Unknown provider: {provider_name}')
@@ -542,11 +638,12 @@ async def update_provider_config(body: ProviderConfigRequest):
             'openai': 'OPENAI_API_KEY', 'xai': 'XAI_API_KEY',
             'nvidia': 'NVIDIA_API_KEY', 'deepseek': 'DEEPSEEK_API_KEY',
             'gemini': 'GEMINI_API_KEY', 'anthropic': 'ANTHROPIC_API_KEY',
+            'local_remote': 'REMOTE_LOCAL_API_KEY',
         }
         url_map = {
             'openai': 'OPENAI_BASE_URL', 'xai': 'XAI_BASE_URL',
             'nvidia': 'NVIDIA_BASE_URL', 'deepseek': 'DEEPSEEK_BASE_URL',
-            'anthropic': 'ANTHROPIC_BASE_URL',
+            'anthropic': 'ANTHROPIC_BASE_URL', 'local_remote': 'REMOTE_LOCAL_BASE_URL',
         }
         for custom in customs:
             name = custom.get('name', '').lower()
@@ -617,6 +714,51 @@ async def update_provider_config(body: ProviderConfigRequest):
 async def test_builtin_provider(provider_name: str):
     """Verify a built-in provider without changing its saved configuration."""
     normalized = provider_name.strip().lower()
+    if normalized == 'local':
+        runtime = local_runtime_status()
+        healthy = bool(
+            runtime['enabled']
+            and runtime['model_exists']
+            and runtime['runtime'] == 'llamacpp'
+            and runtime['runtime_available']
+        )
+        status = (
+            'healthy' if healthy
+            else 'disabled' if not runtime['enabled']
+            else 'unavailable'
+        )
+        return {
+            'ok': healthy,
+            'provider': normalized,
+            'status': status,
+            'models_discovered': 1 if healthy else 0,
+            'failure_reason': None if healthy else 'LOCAL_MODEL_UNAVAILABLE',
+            'failure_message': None if healthy else 'Embedded local model is not ready.',
+        }
+    if normalized == 'local_remote':
+        from agent.providers.local_endpoint_provider import LocalEndpointProvider
+        report = remote_endpoint_status()
+        if not report['enabled']:
+            return {
+                'ok': False, 'provider': normalized, 'status': 'disabled',
+                'models_discovered': 0, 'failure_reason': 'PROVIDER_DISABLED',
+                'failure_message': 'The remote Lexi endpoint is disabled.',
+            }
+        if not report['base_url']:
+            return {
+                'ok': False, 'provider': normalized, 'status': 'unconfigured',
+                'models_discovered': 0, 'failure_reason': 'PROVIDER_UNCONFIGURED',
+                'failure_message': 'The remote Lexi base URL is not configured.',
+            }
+        healthy = await LocalEndpointProvider().health_check()
+        return {
+            'ok': bool(healthy),
+            'provider': normalized,
+            'status': 'healthy' if healthy else 'unavailable',
+            'models_discovered': 1 if healthy else 0,
+            'failure_reason': None if healthy else 'REMOTE_ENDPOINT_UNAVAILABLE',
+            'failure_message': None if healthy else 'The remote Lexi endpoint is unreachable.',
+        }
     allowed = {'openai', 'xai', 'nvidia', 'deepseek', 'gemini', 'anthropic'}
     if normalized not in allowed:
         raise HTTPException(404, {
@@ -1064,7 +1206,8 @@ async def _complete_chat_turn(chat, content, body):
     project=workspace_manager.get(chat['project_id']) if chat['project_id'] else None
     result = await task(TaskRequest(
         prompt=content, project=project['path'] if project else None,
-        mode=body.mode, provider=body.provider, model=body.model,
+        mode=body.mode, chat_mode=getattr(body, 'chat_mode', 'auto') or 'auto',
+        provider=body.provider, model=body.model,
         attachments=body.attachments, actions=body.actions, progress_id=body.progress_id,
     ))
     if body.progress_id:
@@ -1467,7 +1610,9 @@ def _filter_routing_models(
     provider: str | None = None, model: str | None = None,
 ) -> list[dict]:
     if mode == 'local':
-        return [item for item in available_models if item.get('provider') == 'local']
+        return [item for item in available_models if item.get('provider') in {'local', 'local_remote'}]
+    if mode == 'remote_local':
+        return [item for item in available_models if item.get('provider') == 'local_remote']
     if mode in {'provider', 'model'}:
         return [
             item for item in available_models
@@ -1563,8 +1708,35 @@ async def _provider_completion(candidate, prompt: str, system: str,
     return await provider.complete(prompt, system)
 
 
+# Stable fallback reason codes recorded in the fallback trace (Phase 26).
+# Provider messages may already carry one of these codes; otherwise the
+# provider + error type determines the classification below.
+_FALLBACK_REASON_CODES = (
+    'LOCAL_MODEL_MISSING',
+    'LOCAL_MODEL_RESOURCE_INSUFFICIENT',
+    'LOCAL_MODEL_RUNTIME_ERROR',
+    'REMOTE_ENDPOINT_UNAVAILABLE',
+    'REMOTE_MODEL_NOT_FOUND',
+    'QUALITY_GATE_REJECTED',
+)
+
+
 def _failure_reason(candidate, error: Exception) -> tuple[str, str]:
     """Return a stable, secret-free failure classification for the chat UI."""
+    message = redact(str(error))[:300]
+    for code in _FALLBACK_REASON_CODES:
+        if code in str(error):
+            return code, message
+    provider = str(candidate.provider or '').lower()
+    if provider == 'local_remote':
+        if isinstance(error, ModelNotFoundError):
+            return 'REMOTE_MODEL_NOT_FOUND', 'The remote Lexi endpoint does not serve the requested model.'
+        return 'REMOTE_ENDPOINT_UNAVAILABLE', 'The remote Lexi endpoint could not be reached.'
+    if provider == 'local':
+        if isinstance(error, ModelNotFoundError):
+            return 'LOCAL_MODEL_MISSING', 'The embedded Lexi model file is not installed.'
+        if isinstance(error, ProviderUnavailableError):
+            return 'LOCAL_MODEL_RUNTIME_ERROR', 'The embedded Lexi runtime could not complete the request.'
     return failure_details(error, local=candidate.route is Route.LOCAL)
 
 
@@ -1846,6 +2018,15 @@ async def task(body: TaskRequest):
             'code': 'INVALID_ROUTING_OVERRIDE',
             'message': 'mode must be auto, local, provider, or model',
         })
+    # Conversation intent: ask = pure Q&A (never plans or executes workspace
+    # actions), coding = force the workspace agent flow, auto = classify.
+    chat_mode = (body.chat_mode or 'auto').strip().lower()
+    if chat_mode not in {'auto', 'ask', 'coding'}:
+        chat_mode = 'auto'
+    ask_mode = chat_mode == 'ask'
+    force_workspace = chat_mode == 'coding'
+    if ask_mode and body.actions:
+        body = body.model_copy(update={'actions': []})
     requested_provider = body.provider.strip().lower() if body.provider else None
     requested_model = body.model.strip() if body.model else None
     if mode == 'provider' and not requested_provider:
@@ -1880,7 +2061,7 @@ async def task(body: TaskRequest):
     agent_trace = None
     agentic_log: list[str] | None = None
     root = None
-    if not body.project and (body.actions or _requires_workspace_agent(prompt)):
+    if not ask_mode and not body.project and (body.actions or force_workspace or _requires_workspace_agent(prompt)):
         raise HTTPException(400, {
             'code': 'PROJECT_REQUIRED',
             'message': (
@@ -1893,10 +2074,20 @@ async def task(body: TaskRequest):
         root = Path(body.project).resolve()
         if not root.is_dir():
             raise HTTPException(400, 'Project directory not found')
+        registered = next((
+            project for project in workspace_manager.projects()
+            if Path(project['path']).resolve() == root
+        ), None)
+        if not registered:
+            raise HTTPException(403, {
+                'code': 'PROJECT_NOT_REGISTERED',
+                'message': 'Load the project into the workspace before running tasks in it.',
+            })
 
         # The browser is only a client.  Keep planning on the gateway so every
         # client gets the same agent behavior, including API/CLI callers.
-        if not body.actions and _requires_workspace_agent(prompt):
+        # Ask mode never plans actions; coding mode always plans them.
+        if not ask_mode and not body.actions and (force_workspace or _requires_workspace_agent(prompt)):
             progress('PLAN', 'running', 'Planning workspace actions')
             project = workspace_manager.load(root)
             plan = await plan_agent_actions(PlanRequest(
@@ -2134,7 +2325,7 @@ async def task(body: TaskRequest):
 
     # Default model fallback for providers that don't expose model_id via discovery
     cloud_defaults = {
-        'local': settings.local_model_name,
+        'local': settings.active_local_model_profile.model_id,
         'openai': settings.openai_model, 'gemini': settings.gemini_model,
         'anthropic': settings.anthropic_model, 'xai': '', 'nvidia': '', 'deepseek': '',
     }

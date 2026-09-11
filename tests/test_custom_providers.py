@@ -18,16 +18,40 @@ from agent.providers.script_analyzer import ScriptAnalyzer
 from agent.providers.service import ProviderService
 
 
-def openai_manifest(provider_id="custom-openai", **kwargs):
+def openai_manifest(provider_id="custom-openai", base_url="https://api.example.test/v1", protocol="openai-compatible", **kwargs):
     return ProviderManifest(
         provider_id=provider_id,
         name="Custom OpenAI",
-        protocol="openai-compatible",
-        base_url="https://api.example.test/v1",
+        protocol=protocol,
+        base_url=base_url,
         default_model="example-model",
         credential=CredentialReference(name="EXAMPLE_API_KEY"),
         **kwargs,
     )
+
+
+def test_manifest_rejects_private_and_metadata_endpoints():
+    with pytest.raises(ValueError):
+        openai_manifest(base_url="http://127.0.0.1:8000/v1").validate()
+    with pytest.raises(ValueError):
+        openai_manifest(base_url="http://192.168.1.20/v1").validate()
+    with pytest.raises(ValueError):
+        openai_manifest(
+            protocol="local-openai-compatible",
+            base_url="http://169.254.169.254/",
+        ).validate()
+    # Loopback stays legal for explicitly local dev endpoints.
+    openai_manifest(
+        protocol="local-openai-compatible",
+        base_url="http://127.0.0.1:11434/v1",
+    ).validate()
+
+
+def test_manifest_provider_id_charset_is_js_string_safe():
+    with pytest.raises(ValueError):
+        openai_manifest(provider_id="evil');alert(1)//").validate()
+    with pytest.raises(ValueError):
+        openai_manifest(provider_id="EVILspace id").validate()
 
 
 def runtime_manifest(provider_id="runtime-provider", **kwargs):

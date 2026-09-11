@@ -177,6 +177,38 @@ def test_command_policy_rejects_arbitrary_python_modules(tmp_path):
     assert 'allowlist' in str(result.output).lower()
 
 
+def test_command_policy_blocks_version_flag_smuggling(tmp_path):
+    gateway = LocalMCPGateway(tmp_path)
+
+    for smuggled in (
+        'python evil.py --version',
+        'python --version evil.py',
+        'node evil.js --version',
+        'node --check evil.js --version',
+        'npm test -- --evil',
+        'git status --upload-pack=evil',
+    ):
+        result = gateway.execute('execute_command', {'command': smuggled}, approved=True)
+        assert not result.ok, smuggled
+        assert 'allowlist' in str(result.output).lower(), smuggled
+
+
+def test_command_policy_allows_exact_safe_argv(tmp_path):
+    gateway = LocalMCPGateway(tmp_path)
+
+    for safe in (
+        'python --version',
+        'python -m pytest',
+        'python -m pytest -q',
+        'node --version',
+        'git status',
+        'git log --oneline',
+        'npm test',
+    ):
+        policy, _parts = LocalMCPGateway.command_policy(safe)
+        assert policy == 'SAFE', safe
+
+
 def test_legacy_tool_config_is_migrated_on_read(tmp_path):
     config_path = tmp_path / 'mcp.json'
     config_path.write_text(json.dumps({

@@ -17,20 +17,74 @@ class ProviderDiscovery:
         """Synchronous list of providers and their configured status (no health check)."""
         return configured_providers()
 
+    async def _health_one(self, item: dict) -> dict:
+        """Health-check one provider, bounded by the discovery timeout."""
+        try:
+            health = await asyncio.wait_for(
+                get_provider(item['provider']).health_check(),
+                timeout=settings.discovery_timeout_seconds,
+            ) if item['configured'] and item['enabled'] else False
+        except Exception as error:
+            logger.warning("Provider discovery health check failed for %s: %s", item['provider'], type(error).__name__)
+            health = False
+        status = 'disabled' if not item['enabled'] else (
+            'healthy' if health else ('unconfigured' if not item['configured'] else 'unavailable')
+        )
+        return {**item, 'health_status': status}
+
     async def providers(self) -> list[dict]:
+        items = configured_providers()
+        probed = await asyncio.gather(
+            *(self._health_one(item) for item in items), return_exceptions=True,
+        )
         result = []
-        for item in configured_providers():
-            provider = get_provider(item['provider'])
-            try:
-                health = await provider.health_check() if item['configured'] and item['enabled'] else False
-            except Exception as error:
-                logger.warning("Provider discovery health check failed for %s: %s", item['provider'], type(error).__name__)
-                health = False
-            status = 'disabled' if not item['enabled'] else (
-                'healthy' if health else ('unconfigured' if not item['configured'] else 'unavailable')
-            )
-            result.append({**item, 'health_status': status})
+        for item, outcome in zip(items, probed):
+            if isinstance(outcome, Exception):
+                logger.warning(
+                    "Provider discovery health check failed for %s: %s",
+                    item['provider'], type(outcome).__name__,
+                )
+                outcome = {**item, 'health_status': 'unavailable'}
+            result.append(outcome)
         return result
+
+    async def _probe(self, name: str) -> tuple[bool, list, str | None, str | None]:
+        """Run one provider's health + model probe with discovery timeouts."""
+        provider = get_provider(name)
+        failure_reason = None
+        failure_message = None
+        try:
+            healthy = await asyncio.wait_for(
+                provider.health_check(), timeout=settings.discovery_timeout_seconds
+            )
+            if not healthy:
+                failure_reason, failure_message = failure_details(
+                    ProviderUnavailableError(f'{name} health check failed'),
+                    local=name == 'local',
+                )
+        except Exception as error:
+            logger.warning(
+                "Provider refresh health check failed for %s: %s", name, type(error).__name__
+            )
+            healthy = False
+            failure_reason, failure_message = failure_details(error, local=name == 'local')
+
+        models: list[dict] = []
+        if healthy:
+            try:
+                models = await asyncio.wait_for(
+                    provider.list_models(), timeout=settings.discovery_timeout_seconds
+                )
+                if not models:
+                    failure_reason = 'NO_MODELS'
+                    failure_message = 'The provider is reachable but returned no usable models.'
+            except Exception as error:
+                logger.warning(
+                    "Provider model refresh failed for %s: %s", name, type(error).__name__
+                )
+                healthy = False
+                failure_reason, failure_message = failure_details(error, local=name == 'local')
+        return healthy, models, failure_reason, failure_message
 
     async def refresh(self, provider_name: str | None = None) -> list[dict]:
         configured_items = configured_providers()
@@ -40,6 +94,7 @@ class ProviderDiscovery:
             else [item['provider'] for item in configured_items if item['configured'] and item['enabled']]
         )
         output = []
+        eligible: list[str] = []
         for name in names:
             configured = next((item for item in configured_items if item['provider'] == name), None)
             if not configured or not configured['enabled']:
@@ -59,41 +114,23 @@ class ProviderDiscovery:
                     'failure_message': 'The provider credential is not configured.',
                 })
                 continue
+            eligible.append(name)
 
-            failure_reason = None
-            failure_message = None
-            try:
-                healthy = await asyncio.wait_for(
-                    provider.health_check(), timeout=settings.discovery_timeout_seconds
-                )
-                if not healthy:
-                    failure_reason, failure_message = failure_details(
-                        ProviderUnavailableError(f'{name} health check failed'),
-                        local=name == 'local',
-                    )
-            except Exception as error:
+        # Network probes run concurrently (each bounded by the discovery
+        # timeout); registry writes stay sequential below to avoid SQLite
+        # contention between concurrent refresh tasks.
+        probes = await asyncio.gather(
+            *(self._probe(name) for name in eligible), return_exceptions=True,
+        )
+        for name, probe in zip(eligible, probes):
+            if isinstance(probe, Exception):
                 logger.warning(
-                    "Provider refresh health check failed for %s: %s", name, type(error).__name__
+                    "Provider refresh probe failed for %s: %s", name, type(probe).__name__
                 )
-                healthy = False
-                failure_reason, failure_message = failure_details(error, local=name == 'local')
-
-            models: list[dict] = []
-            if healthy:
-                try:
-                    models = await asyncio.wait_for(
-                        provider.list_models(), timeout=settings.discovery_timeout_seconds
-                    )
-                    if not models:
-                        failure_reason = 'NO_MODELS'
-                        failure_message = 'The provider is reachable but returned no usable models.'
-                except Exception as error:
-                    logger.warning(
-                        "Provider model refresh failed for %s: %s", name, type(error).__name__
-                    )
-                    healthy = False
-                    failure_reason, failure_message = failure_details(error, local=name == 'local')
-
+                healthy, models = False, []
+                failure_reason, failure_message = failure_details(probe, local=name == 'local')
+            else:
+                healthy, models, failure_reason, failure_message = probe
             normalized = [
                 ModelMetadata(
                     provider=name,
@@ -114,6 +151,20 @@ class ProviderDiscovery:
                     availability=item.get('availability', 'verified'),
                     health_status='healthy',
                     last_verified=datetime.now(timezone.utc).isoformat(),
+                    deployment=item.get('deployment'),
+                    # Local deployment details so the registry never confuses
+                    # the same model across embedded vs remote deployments.
+                    version=item.get('version'),
+                    runtime=item.get('runtime'),
+                    format=item.get('format'),
+                    quantization=item.get('quantization'),
+                    size_bytes=item.get('size_bytes'),
+                    sha256=item.get('sha256'),
+                    source=item.get('source', 'huggingface' if name in {'local', 'local_remote'} else None),
+                    license=item.get('license'),
+                    installed=item.get('installed'),
+                    package_id=item.get('package_id'),
+                    compatibility=item.get('compatibility', {}),
                 )
                 for item in models
             ]

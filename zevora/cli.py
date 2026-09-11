@@ -30,7 +30,6 @@ def show_status():
         print(f"Gateway Status: RUNNING\nPort: {state['port']}\nDashboard: {state['url']}")
     else:
         print('Gateway Status: STOPPED')
-    return state
 
 
 def launch(background=False):
@@ -81,7 +80,7 @@ def intelligence_status():
 
 
 def local_status():
-    """Report the local Qwen model configuration and runtime state."""
+    """Report the local Lexi model configuration and runtime state."""
     from agent.config import settings
     from agent.models.manager import LocalIntelligenceManager
     from agent.providers.local_provider import local_runtime_status
@@ -89,15 +88,23 @@ def local_status():
 
     manager = LocalIntelligenceManager()
     runtime = local_runtime_status()
+    profile = settings.active_local_model_profile
     payload = {
         'provider': 'local',
-        'display_name': settings.local_model_display_name,
-        'model_id': settings.local_model_name,
+        'deployment': 'embedded',
+        'display_name': profile.display_name,
+        'model_id': profile.model_id,
         'enabled': settings.local_model_enabled,
-        'repository': settings.local_model_repository,
-        'quant': settings.local_model_quant,
-        'runtime': settings.local_model_runtime,
+        'repository': profile.repository,
+        'filename': profile.filename,
+        'quant': profile.quantization,
+        'runtime': profile.runtime,
         'model_path': str(settings.local_model_file),
+        'remote': {
+            'enabled': settings.remote_local_enabled,
+            'base_url': settings.remote_local_base_url or None,
+            'model': settings.remote_local_model,
+        },
     }
     payload.update({key: runtime.get(key) for key in ('model_exists', 'model_size_mb', 'state', 'qr_available', 'runtime_available') if key in runtime})
     payload['context_max_tokens'] = settings.context_max_tokens

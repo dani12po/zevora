@@ -23,6 +23,9 @@ class ModelMetadata:
     health_status: str = 'unknown'
     last_verified: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     # Local intelligence package fields. Unknown values remain None/unknown.
+    # ``deployment`` distinguishes the same model across runtime instances
+    # (e.g. embedded Lexi vs remote Lexi): 'embedded', 'remote', or None.
+    deployment: str | None = None
     version: str | None = None
     runtime: str | None = None
     format: str | None = None

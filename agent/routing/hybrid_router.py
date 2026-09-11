@@ -10,9 +10,17 @@ from .task_classifier import TaskClassifier
 
 class Route(str, Enum):
     CACHE = 'CACHE'
+    # LOCAL covers both local deployments: embedded Lexi (llama.cpp in-process)
+    # and remote Lexi (external llama.cpp server, provider ``local_remote``).
+    # The candidate's ``deployment`` field ('embedded' vs 'remote') and its
+    # provider id distinguish the two; cloud APIs use CLOUD.
     LOCAL = 'LOCAL'
     CLOUD = 'CLOUD'
     UNAVAILABLE = 'UNAVAILABLE'
+
+
+# Providers that belong to the local pool (embedded + remote Lexi).
+LOCAL_PROVIDERS = frozenset({'local', 'local_remote'})
 
 
 @dataclass(frozen=True)
@@ -43,8 +51,9 @@ class AdaptiveHybridRouter:
     # keep those tasks cloud-first while routine prompts remain local-first.
     CLOUD_FIRST_COMPLEXITY = .50
     # Coding/debugging/tool tasks under this complexity remain local-first in
-    # AUTO mode so the local Qwen engine handles routine coding work; architecture
-    # and migration tasks stay cloud-first via the complexity bump in the classifier.
+    # AUTO mode so embedded Lexi handles routine coding work (remote Lexi is
+    # the next fallback inside the local pool); architecture and migration
+    # tasks stay cloud-first via the complexity bump in the classifier.
     CODING_LOCAL_FIRST_COMPLEXITY = .60
 
     def __init__(self, classifier=None):
@@ -166,7 +175,7 @@ class AdaptiveHybridRouter:
         adaptive = performance or {}
         for model in models:
             provider = str(model.get('provider') or '').lower()
-            if (provider == 'local') != local:
+            if (provider in LOCAL_PROVIDERS) != local:
                 continue
             model_id = str(model.get('model_id') or '')
             policy = provider_policy(provider)
@@ -326,13 +335,21 @@ class AdaptiveHybridRouter:
         )
         mode = settings.routing_mode.upper()
         if mode == 'LOCAL_ONLY':
+            # Embedded and remote Lexi only; embedded wins ties by provider id.
             return local
+        if mode == 'REMOTE_LOCAL_ONLY':
+            # Remote Lexi only (external llama.cpp server).
+            return [
+                item for item in local
+                if str(item.provider or '').lower() == 'local_remote'
+            ]
         if mode == 'CLOUD_ONLY':
             return cloud
-        # Local Qwen is the first-class coding engine: for routine coding /
+        # Embedded Lexi is the first-class coding engine: for routine coding /
         # debugging / tool tasks below the coding complexity gate it leads the
-        # queue, while genuinely complex/architectural, long-context, and vision
-        # work stays cloud-first. Vision and architecture/migration work always
+        # queue (remote Lexi follows inside the local pool), while genuinely
+        # complex/architectural, long-context, and vision work stays
+        # cloud-first. Vision and architecture/migration work always
         # prefer cloud.
         coding_local_first = bool(
             set(task.labels) & {'coding', 'debugging', 'tool_task'}

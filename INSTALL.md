@@ -3,7 +3,7 @@
 ## Requirements
 
 - Python 3.11, 3.12, or 3.13
-- The bundled GGUF at `models/zevora-4b-thinking.gguf`
+- The bundled Lexi GGUF at `models/Lexi-Llama-3-8B-Uncensored-Q5_K_M.gguf` (downloaded on demand, ~5.73 GB; see `docs/LEXI_LLAMA.md`)
 - `llama-cpp-python` for local inference
 - Cloud API keys are optional and enable cloud-first complex work and fallback
 - CPU inference works without Ollama; GPU offload is optional

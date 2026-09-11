@@ -856,6 +856,7 @@ def test_workspace_uses_one_movable_chat_surface_and_component_filesystem():
     workspace = (static / 'workspace.js').read_text(encoding='utf-8')
     filesystem = (static / 'filesystem.js').read_text(encoding='utf-8')
     chat = (static / 'chat.js').read_text(encoding='utf-8')
+    chatmode = (static / 'chatmode.js').read_text(encoding='utf-8')
     app = (static / 'app.js').read_text(encoding='utf-8')
     css = (static / 'styles.css').read_text(encoding='utf-8')
 
@@ -869,7 +870,7 @@ def test_workspace_uses_one_movable_chat_surface_and_component_filesystem():
     assert 'chat-dock-collapsed' in workspace and 'zevora.workspace.chatWidth' in workspace
     assert 'setMessages(' not in filesystem and "classList.add('hidden')" not in filesystem
     assert "workspaceHost.replaceChildren(layout)" in filesystem
-    assert "return {coding:codingRequest, workspace:" in chat
+    assert "return {coding: codingRequest, workspace:" in chatmode
     assert "if (!state.workspaceMode) await navigate(routeDecision.route)" in chat
     assert "'/terminal': workspaceRoute(renderTerminal)" in app
     assert '.coding-workspace.chat-dock-collapsed' in css
@@ -1017,6 +1018,62 @@ def test_builtin_provider_connection_test_rejects_zero_models(monkeypatch):
     assert result['status'] == 'healthy'
     assert result['models_discovered'] == 0
     assert result['failure_reason'] == 'NO_MODELS'
+
+
+def test_builtin_provider_test_supports_embedded_local(monkeypatch):
+    monkeypatch.setattr(main, 'local_runtime_status', lambda: {
+        'enabled': True, 'model_exists': True, 'runtime': 'llamacpp',
+        'runtime_available': True,
+    })
+    result = asyncio.run(main.test_builtin_provider('local'))
+    assert result['ok'] is True
+    assert result['status'] == 'healthy'
+    assert result['models_discovered'] == 1
+
+    monkeypatch.setattr(main, 'local_runtime_status', lambda: {
+        'enabled': False, 'model_exists': False, 'runtime': 'llamacpp',
+        'runtime_available': True,
+    })
+    result = asyncio.run(main.test_builtin_provider('LOCAL'))
+    assert result['ok'] is False
+    assert result['status'] == 'disabled'
+
+
+def test_builtin_provider_test_supports_remote_lexi(monkeypatch):
+    from agent.providers import local_endpoint_provider
+
+    monkeypatch.setattr(main, 'remote_endpoint_status', lambda: {
+        'enabled': False, 'base_url': None,
+    })
+    result = asyncio.run(main.test_builtin_provider('local_remote'))
+    assert result['status'] == 'disabled'
+
+    monkeypatch.setattr(main, 'remote_endpoint_status', lambda: {
+        'enabled': True, 'base_url': None,
+    })
+    result = asyncio.run(main.test_builtin_provider('local_remote'))
+    assert result['status'] == 'unconfigured'
+
+    async def _unreachable(self):
+        return False
+
+    async def _reachable(self):
+        return True
+
+    monkeypatch.setattr(local_endpoint_provider.LocalEndpointProvider, 'health_check', _unreachable)
+    monkeypatch.setattr(main, 'remote_endpoint_status', lambda: {
+        'enabled': True, 'base_url': 'http://127.0.0.1:11434',
+    })
+    result = asyncio.run(main.test_builtin_provider('local_remote'))
+    assert result['ok'] is False
+    assert result['status'] == 'unavailable'
+    assert result['failure_reason'] == 'REMOTE_ENDPOINT_UNAVAILABLE'
+
+    monkeypatch.setattr(local_endpoint_provider.LocalEndpointProvider, 'health_check', _reachable)
+    result = asyncio.run(main.test_builtin_provider('local_remote'))
+    assert result['ok'] is True
+    assert result['status'] == 'healthy'
+    assert result['models_discovered'] == 1
 
 
 def test_provider_frontend_distinguishes_verification_results():

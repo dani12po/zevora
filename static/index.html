@@ -45,7 +45,7 @@
       <select id="project-select" aria-label="Current project">
         <option value="">No folder selected</option>
       </select>
-      <button class="icon-action" id="open-folder-btn" type="button" title="Open folder">
+      <button class="icon-action" id="open-folder-btn" type="button" title="Open folder" aria-label="Open folder">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
       </button>
     </div>
@@ -209,6 +209,20 @@
         <button id="add-action" class="icon-btn" type="button" title="Add a structured action" aria-label="Add a structured action">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg>
         </button>
+        <button id="composer-plus" class="icon-btn" type="button" title="More actions" aria-label="More actions">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+        <div id="composer-menu" class="composer-menu hidden" role="menu" aria-label="Composer actions">
+          <button type="button" role="menuitem" data-menu="attach">Attach files or photos</button>
+          <button type="button" role="menuitem" data-menu="action">Add a structured action</button>
+          <button type="button" role="menuitem" data-menu="skills">List skills <span class="menu-hint">/skills</span></button>
+          <button type="button" role="menuitem" data-menu="help">Slash commands <span class="menu-hint">/help</span></button>
+        </div>
+        <div class="chat-mode-segment" role="group" aria-label="Chat mode">
+          <button type="button" data-chat-mode="ask" title="Ask: pure Q&A, never touches files">Ask</button>
+          <button type="button" data-chat-mode="auto" class="active" title="Auto: classify each message">Auto</button>
+          <button type="button" data-chat-mode="coding" title="Coding: workspace agent flow">Coding</button>
+        </div>
         <select id="routing-override" class="routing-select" aria-label="Routing mode" title="Routing mode"><option value="auto">Auto</option><option value="local">Local</option><option value="provider">Provider</option><option value="model">Model</option></select>
         <select id="routing-provider" class="routing-select hidden" aria-label="Provider"></select>
         <select id="routing-model" class="routing-select hidden" aria-label="Model"></select>

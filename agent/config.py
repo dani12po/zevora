@@ -1,8 +1,43 @@
 import json
+import os
+from dataclasses import dataclass, field as dc_field
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+@dataclass
+class LocalModelProfile:
+    """Model-agnostic description of a bundled local model."""
+    provider_id: str = 'local'
+    model_id: str = 'lexi-llama-3-8b-q4_k_m'
+    display_name: str = 'Lexi Llama 3 8B Q4_K_M'
+    repository: str = 'bartowski/Lexi-Llama-3-8B-Uncensored-GGUF'
+    filename: str = 'Lexi-Llama-3-8B-Uncensored-Q4_K_M.gguf'
+    quantization: str = 'Q4_K_M'
+    runtime: str = 'llamacpp'
+    format: str = 'gguf'
+    context_length: int = 8192
+    max_output_tokens: int = 2048
+    temperature: float = 0.4
+    batch_size: int = 512
+    threads: int = 0
+    gpu_layers: int = 0
+    expected_size_bytes: int = 0
+    sha256: str = ''
+    capabilities: list[str] = dc_field(default_factory=lambda: ['chat', 'instruction'])
+    source: str = 'huggingface'
+    license: str = 'apache-2.0'
+    deployment_mode: str = 'bundled'
+    # Optional override so tests can point at a tmp_path without touching the
+    # real model directory.  When None the path is derived from repository/filename.
+    model_file_path: str = ''
+
+
+DEFAULT_LEXI_PROFILE = LocalModelProfile()
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=ROOT / '.env', extra='ignore')
@@ -36,23 +71,51 @@ class Settings(BaseSettings):
     local_endpoint_url: str = 'http://127.0.0.1:11434'
     local_endpoint_api_key: str = ''
     local_endpoint_timeout_seconds: int = 30
-    # Qwen3.8-Flash-Next GGUF repository and quantization. The provider loads the
+    # Lexi-Llama-3-8B GGUF repository and quantization. The provider loads the
     # single selected package; it never downloads the whole repository.
-    local_model_repository: str = 'unsloth/Qwen3.8-Flash-Next-GGUF'
-    local_model_quant: str = 'UD-Q4_K_XL'
+    local_model_repository: str = 'bartowski/Lexi-Llama-3-8B-Uncensored-GGUF'
+    local_model_quant: str = 'Q4_K_M'
     local_model_base_url: str = ''
-    local_model_display_name: str = 'Qwen3.8-Flash-Next'
-    local_model_path: str = 'models/zevora-4b-thinking.gguf'
-    local_model_name: str = 'qwen3.8-flash-next'
+    local_model_display_name: str = 'Lexi Llama 3 8B Q4_K_M'
+    local_model_path: str = 'models/Lexi-Llama-3-8B-Uncensored-Q4_K_M.gguf'
+    local_model_filename: str = 'Lexi-Llama-3-8B-Uncensored-Q4_K_M.gguf'
+    local_model_name: str = 'lexi-llama-3-8b-q4_k_m'
     local_model_package_path: str = 'data/models/zevora-local'
     local_model_external_path: str = ''
     local_model_registry_path: str = 'data/database/model_registry.db'
     local_model_context_length: int = 8192
     local_model_max_tokens: int = 2048
     local_model_threads: int = 0
+    # GPU layers offloaded to llama.cpp. ``0`` means AUTO: prefer GPU offload
+    # when a GPU is detected, otherwise stay on CPU. Accepts ``auto`` as well.
     local_model_gpu_layers: int = 0
     local_model_batch_size: int = 512
     local_model_temperature: float = .4
+    # Active bundled-local-model profile. The provider reads model parameters from
+    # this profile instead of the flat ``local_model_*`` fields; it never
+    # downloads the whole repository, only the selected package.
+    active_local_model_profile: LocalModelProfile = DEFAULT_LEXI_PROFILE
+
+    # ── Remote Lexi backend (generic OpenAI-compatible llama.cpp server) ──────
+    # May run on Colab, Kaggle, self-hosted GPU, or any compatible endpoint.
+    # Only BASE_URL + MODEL_ID (+ optional API key) are required; never commit
+    # a temporary tunnel URL to the repository.
+    remote_local_enabled: bool = False
+    remote_local_base_url: str = ''
+    remote_local_api_key: str = ''
+    remote_local_model: str = 'lexi-llama-3-8b-q4_k_m'
+    remote_local_timeout_seconds: int = 120
+    remote_local_health_check_timeout_seconds: int = 10
+    remote_local_streaming: bool = True
+    remote_local_routing_priority: int = 90
+
+    @field_validator('local_model_gpu_layers', mode='before')
+    @classmethod
+    def _coerce_gpu_layers(cls, value):
+        """Accept ``auto`` (Phase 19) as AUTO == 0 instead of failing parsing."""
+        if isinstance(value, str) and value.strip().lower() == 'auto':
+            return 0
+        return value
 
     # ── Provider discovery, custom runtimes, and context economy ─────────────
     model_registry_ttl_hours: int = 24
@@ -130,6 +193,8 @@ class Settings(BaseSettings):
 
     @property
     def local_model_file(self) -> Path:
+        if self.active_local_model_profile.model_file_path:
+            return Path(self.active_local_model_profile.model_file_path).expanduser().resolve()
         configured = Path(self.local_model_path).expanduser()
         return configured.resolve() if configured.is_absolute() else (ROOT / configured).resolve()
 
@@ -152,7 +217,39 @@ class Settings(BaseSettings):
     def allowed_basic_skills(self) -> set[str]:
         return {item.strip().lower() for item in self.basic_skills_allowlist.split(',') if item.strip()}
 
+# Phase 19: ``ZEVORA_``-prefixed aliases for every documented variable.
+# Existing unprefixed names keep working; an explicitly set unprefixed value
+# always wins over its ``ZEVORA_`` alias so current deployments never break.
+_ZEVORA_ENV_ALIASES = {
+    'ZEVORA_LOCAL_MODEL_ENABLED': 'LOCAL_MODEL_ENABLED',
+    'ZEVORA_LOCAL_MODEL_RUNTIME': 'LOCAL_MODEL_RUNTIME',
+    'ZEVORA_LOCAL_MODEL_REPOSITORY': 'LOCAL_MODEL_REPOSITORY',
+    'ZEVORA_LOCAL_MODEL_FILENAME': 'LOCAL_MODEL_FILENAME',
+    'ZEVORA_LOCAL_MODEL_QUANT': 'LOCAL_MODEL_QUANT',
+    'ZEVORA_LOCAL_MODEL_NAME': 'LOCAL_MODEL_NAME',
+    'ZEVORA_LOCAL_MODEL_DISPLAY_NAME': 'LOCAL_MODEL_DISPLAY_NAME',
+    'ZEVORA_LOCAL_MODEL_PATH': 'LOCAL_MODEL_PATH',
+    'ZEVORA_LOCAL_MODEL_CONTEXT_LENGTH': 'LOCAL_MODEL_CONTEXT_LENGTH',
+    'ZEVORA_LOCAL_MODEL_MAX_TOKENS': 'LOCAL_MODEL_MAX_TOKENS',
+    'ZEVORA_LOCAL_MODEL_GPU_LAYERS': 'LOCAL_MODEL_GPU_LAYERS',
+    'ZEVORA_LOCAL_MODEL_BATCH_SIZE': 'LOCAL_MODEL_BATCH_SIZE',
+    'ZEVORA_LOCAL_MODEL_TEMPERATURE': 'LOCAL_MODEL_TEMPERATURE',
+    'ZEVORA_REMOTE_LOCAL_ENABLED': 'REMOTE_LOCAL_ENABLED',
+    'ZEVORA_REMOTE_LOCAL_BASE_URL': 'REMOTE_LOCAL_BASE_URL',
+    'ZEVORA_REMOTE_LOCAL_API_KEY': 'REMOTE_LOCAL_API_KEY',
+    'ZEVORA_REMOTE_LOCAL_MODEL': 'REMOTE_LOCAL_MODEL',
+    'ZEVORA_REMOTE_LOCAL_TIMEOUT_SECONDS': 'REMOTE_LOCAL_TIMEOUT_SECONDS',
+}
+
+
+def _apply_zevora_env_aliases() -> None:
+    for prefixed, plain in _ZEVORA_ENV_ALIASES.items():
+        if prefixed in os.environ and plain not in os.environ:
+            os.environ[plain] = os.environ[prefixed]
+
+
 def _load_settings() -> Settings:
+    _apply_zevora_env_aliases()
     loaded = Settings()
     ui_file = ROOT / 'config' / 'ui_settings.json'
     try:
@@ -170,6 +267,7 @@ settings = _load_settings()
 
 def reload_settings() -> Settings:
     """Reload .env and persisted UI settings without restarting the gateway."""
+    _apply_zevora_env_aliases()
     refreshed = _load_settings()
     for name in type(refreshed).model_fields:
         setattr(settings, name, getattr(refreshed, name))

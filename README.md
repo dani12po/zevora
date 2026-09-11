@@ -4,9 +4,12 @@
 with a private local GGUF model and optional cloud providers. Memory, cache,
 experience, and project context remain local.
 
-The bundled `Zevora Local AI` runtime uses llama.cpp and needs no API key or
-internet connection. Cloud providers extend capacity for complex, multimodal,
-and long-context work.
+The bundled `Zevora Local AI` runtime serves Lexi Llama 3 8B Q5_K_M
+(`bartowski/Lexi-Llama-3-8B-Uncensored-GGUF`) through llama.cpp and needs no API
+key or internet connection. A remote Lexi server (Colab, Kaggle, or
+self-hosted) can be attached over an OpenAI-compatible endpoint. Cloud
+providers extend capacity for complex, multimodal, and long-context work.
+See `docs/LEXI_LLAMA.md` for embedded/remote setup.
 
 ## Quick Start
 
@@ -91,7 +94,9 @@ zevora uninstall-local # preview managed package removal
 zevora uninstall-local --approve # remove only the managed local package
 ```
 
-`uninstall-local` never removes externally configured GGUF files. The command and
+`uninstall-local` never removes externally configured GGUF files. Files the
+installer downloaded itself (tracked by its `.sha256` sidecar) are listed in
+the dry-run preview and removed only with `--approve`. The command and
 `POST /api/local-intelligence/uninstall` are dry-run by default and require explicit
 approval for deletion.
 

@@ -1,10 +1,11 @@
 # Adaptive Hybrid Intelligence Router
 
 ZEVORA always remains architecturally hybrid. In `AUTO`, the candidate order is
-`CACHE -> LOCAL/CLOUD pool -> fallback pool`; routine work is local-first while
-complex, architecture, migration, vision, and long-context work are cloud-first
-when capable. `LOCAL_ONLY` and `CLOUD_ONLY` are routing constraints, not product
-identity modes.
+`CACHE -> LOCAL/CLOUD pool -> fallback pool`; routine work prefers embedded Lexi
+first, then remote Lexi, while complex, architecture, migration, vision, and
+long-context work are cloud-first when capable. `LOCAL_ONLY` (embedded + remote
+Lexi), `REMOTE_LOCAL_ONLY` (remote Lexi server only), and `CLOUD_ONLY` are
+routing constraints, not product identity modes.
 
 Eligibility is fail-closed and uses verified availability and health, explicit
 capabilities, required MCP tool support, estimated context tokens versus model

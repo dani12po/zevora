@@ -8,6 +8,7 @@ export const state = {
   pendingActions: [],
   pendingApprovalRequest: null,
   fsProjectId: null,
+  chatMode: localStorage.getItem('zevora.chat.mode') || 'auto',
 };
 
 const gatewayBase = window.ZEVORA_GATEWAY_URL || window.location.origin;

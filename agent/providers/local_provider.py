@@ -43,9 +43,88 @@ def _local_failure_reason(error: Exception) -> str:
     return 'runtime_error'
 
 
+def _active_profile():
+    """Return the active bundled-local-model profile (default: Lexi)."""
+    return settings.active_local_model_profile
+
+
 def _model_identity() -> str:
     """Human-facing display name for the configured local model."""
-    return settings.local_model_display_name or 'Local Model'
+    return _active_profile().display_name or 'Local Model'
+
+
+def _gpu_available() -> bool:
+    """Detect a usable GPU without importing heavy optional dependencies."""
+    import shutil
+    import subprocess
+
+    if shutil.which('nvidia-smi') is None:
+        return False
+    try:
+        output = subprocess.run(
+            ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return bool(output)
+
+
+def resolve_gpu_layers() -> int:
+    """Resolve the configured GPU offload, honouring AUTO (``0``).
+
+    Explicit positive/negative values pass through untouched (``-1`` means
+    "offload all layers" in llama.cpp). AUTO (``0``) prefers GPU offload when
+    a GPU is detected and stays on CPU otherwise; execution is never forced
+    onto a GPU-only path.
+    """
+    configured = _active_profile().gpu_layers
+    if configured != 0:
+        return configured
+    return -1 if _gpu_available() else 0
+
+
+def check_local_resources(model_path: Path) -> dict:
+    """Preflight RAM vs GGUF size before loading the embedded model.
+
+    Returns a bounded report. Raises ``ProviderUnavailableError`` carrying the
+    ``LOCAL_MODEL_RESOURCE_INSUFFICIENT`` reason instead of crashing the
+    gateway when the model cannot safely fit.
+    """
+    profile = _active_profile()
+    try:
+        file_bytes = model_path.stat().st_size if model_path.is_file() else 0
+    except OSError:
+        file_bytes = 0
+    # Calibrated runtime overhead on top of the raw weights: the KV cache
+    # grows with context length (~96 KiB per token covers Llama-class
+    # architectures with headroom) plus scratch space, with a 512 MiB floor
+    # for small contexts. The old estimate (file * 1.25 + 512 MiB + 1 GiB
+    # context block) overstated need by ~1 GiB and needlessly bricked 8 GiB
+    # machines; llama.cpp memory-maps weights instead of duplicating them.
+    context_overhead_bytes = max(
+        512 * 1024 * 1024, max(0, profile.context_length) * 96 * 1024,
+    )
+    required_bytes = file_bytes + context_overhead_bytes + 256 * 1024 * 1024
+    available_bytes = psutil.virtual_memory().available
+    report = {
+        'model_bytes': file_bytes,
+        'required_bytes': required_bytes,
+        'available_bytes': available_bytes,
+        'context_length': profile.context_length,
+        'gpu_layers': resolve_gpu_layers(),
+        'sufficient': available_bytes >= required_bytes,
+    }
+    if not report['sufficient']:
+        raise ProviderUnavailableError(
+            'LOCAL_MODEL_RESOURCE_INSUFFICIENT: embedded Lexi model needs ~'
+            f'{required_bytes // 1024 // 1024} MiB but only '
+            f'{available_bytes // 1024 // 1024} MiB is available'
+        )
+    return report
 
 
 class _LocalRuntime:
@@ -171,19 +250,34 @@ class _LocalRuntime:
                 logger.warning('local_model_load_failed reason=disabled')
                 self._state = STATE_UNAVAILABLE
                 raise ProviderUnavailableError('local model is disabled')
-            if settings.local_model_runtime.lower() != 'llamacpp':
+            profile = _active_profile()
+            if profile.runtime.lower() != 'llamacpp':
                 logger.warning(
                     'local_model_load_failed reason=unsupported_runtime runtime=%s',
-                    settings.local_model_runtime,
+                    profile.runtime,
                 )
                 self._state = STATE_UNAVAILABLE
                 raise ProviderUnavailableError(
-                    f'unsupported local runtime: {settings.local_model_runtime}'
+                    f'unsupported local runtime: {profile.runtime}'
                 )
             if not model_path.is_file():
                 logger.warning('local_model_load_failed reason=model_file_missing path=%s', model_path)
                 self._state = STATE_NOT_INSTALLED
                 raise ModelNotFoundError(f'local GGUF not found: {model_path}')
+
+            try:
+                resources = check_local_resources(model_path)
+            except ProviderUnavailableError as error:
+                logger.warning('local_model_load_failed reason=LOCAL_MODEL_RESOURCE_INSUFFICIENT path=%s', model_path)
+                self._state = STATE_ERROR
+                raise
+            logger.info(
+                'local_model_resources model_mb=%s required_mb=%s available_mb=%s gpu_layers=%s',
+                resources['model_bytes'] // 1024 // 1024,
+                resources['required_bytes'] // 1024 // 1024,
+                resources['available_bytes'] // 1024 // 1024,
+                resources['gpu_layers'],
+            )
 
             self._verify_model_integrity(model_path)
 
@@ -193,16 +287,17 @@ class _LocalRuntime:
             self._state = STATE_LOADING
             try:
                 llama_cpp = importlib.import_module('llama_cpp')
+                profile = _active_profile()
                 kwargs = {
                     'model_path': str(model_path),
-                    'n_ctx': settings.local_model_context_length,
-                    'n_gpu_layers': settings.local_model_gpu_layers,
+                    'n_ctx': profile.context_length,
+                    'n_gpu_layers': resolve_gpu_layers(),
                     'verbose': False,
                 }
-                if settings.local_model_threads > 0:
-                    kwargs['n_threads'] = settings.local_model_threads
-                if settings.local_model_batch_size > 0:
-                    kwargs['n_batch'] = settings.local_model_batch_size
+                if profile.threads > 0:
+                    kwargs['n_threads'] = profile.threads
+                if profile.batch_size > 0:
+                    kwargs['n_batch'] = profile.batch_size
                 model = llama_cpp.Llama(**kwargs)
             except (ModelNotFoundError, ProviderUnavailableError):
                 self._state = STATE_ERROR
@@ -248,8 +343,8 @@ class _LocalRuntime:
                 self._state = STATE_BUSY
                 result = model.create_chat_completion(
                     messages=messages,
-                    max_tokens=settings.local_model_max_tokens,
-                    temperature=settings.local_model_temperature,
+                    max_tokens=_active_profile().max_output_tokens,
+                    temperature=_active_profile().temperature,
                     stream=False,
                 )
             text = result['choices'][0]['message']['content']
@@ -291,8 +386,8 @@ class _LocalRuntime:
                     self._state = STATE_BUSY
                     generator = model.create_chat_completion(
                         messages=messages,
-                        max_tokens=settings.local_model_max_tokens,
-                        temperature=settings.local_model_temperature,
+                        max_tokens=_active_profile().max_output_tokens,
+                        temperature=_active_profile().temperature,
                         stream=True,
                     )
                     for chunk in generator:
@@ -335,17 +430,20 @@ class _LocalRuntime:
         model_path = settings.local_model_file
         runtime_available = importlib.util.find_spec('llama_cpp') is not None
         state = self._state_for()
+        profile = _active_profile()
         return {
             'provider': 'local',
+            'deployment': 'embedded',
             'display_name': _model_identity(),
             'enabled': settings.local_model_enabled,
             'configured': settings.local_model_enabled and model_path.is_file(),
-            'runtime': settings.local_model_runtime,
+            'runtime': profile.runtime,
             'runtime_available': runtime_available,
             'state': state,
-            'model_id': settings.local_model_name,
-            'model_repository': settings.local_model_repository,
-            'quantization': settings.local_model_quant or None,
+            'model_id': profile.model_id,
+            'model_repository': profile.repository,
+            'model_filename': profile.filename,
+            'quantization': profile.quantization or None,
             'model_path': str(model_path),
             'model_exists': model_path.is_file(),
             'model_size_mb': (
@@ -354,9 +452,9 @@ class _LocalRuntime:
             ),
             'loaded': self._model is not None and self._loaded_path == str(model_path),
             'loading_error': self._loading_error,
-            'context_length': settings.local_model_context_length,
-            'max_output_tokens': settings.local_model_max_tokens,
-            'batch_size': settings.local_model_batch_size,
+            'context_length': profile.context_length,
+            'max_output_tokens': profile.max_output_tokens,
+            'batch_size': profile.batch_size,
             'process_rss_mb': psutil.Process().memory_info().rss // 1024 // 1024,
             'loaded_process_rss_mb': self._loaded_rss_mb,
             'load_delta_mb': self._load_delta_mb,
@@ -389,7 +487,7 @@ class LocalProvider(AIProvider):
     provider_id = 'local'
 
     def __init__(self, model_id: str | None = None):
-        self.default_model = model_id or settings.local_model_name
+        self.default_model = model_id or _active_profile().model_id
         self.supports_vision = False
 
     def configured(self) -> bool:
@@ -412,9 +510,14 @@ class LocalProvider(AIProvider):
         if not self.configured():
             return []
         status = local_runtime_status()
+        profile = _active_profile()
         return [{
             'model_id': self.default_model,
             'display_name': _model_identity(),
+            'deployment': 'embedded',
+            'runtime': profile.runtime,
+            'format': profile.format,
+            'quantization': profile.quantization or None,
             'capabilities': [
                 'general', 'coding', 'reasoning', 'tool_use', 'json',
                 'local', 'private',
@@ -424,8 +527,8 @@ class LocalProvider(AIProvider):
                 'coding_score': .86,
                 'reasoning_score': .84,
             },
-            'context_window': settings.local_model_context_length,
-            'max_output_tokens': settings.local_model_max_tokens,
+            'context_window': profile.context_length,
+            'max_output_tokens': profile.max_output_tokens,
             'supports_streaming': True,
             'supports_tools': True,
             'supports_vision': False,
@@ -434,7 +537,6 @@ class LocalProvider(AIProvider):
             'supports_json': True,
             'input_price': 0,
             'output_price': 0,
-            'quantization': settings.local_model_quant or None,
             'installed': status['model_exists'],
             'availability': 'verified' if status['runtime_available'] else 'unavailable',
             'health_status': 'healthy' if status['runtime_available'] else 'unavailable',
@@ -458,7 +560,7 @@ class LocalProvider(AIProvider):
             model_id=self.default_model,
             capabilities=frozenset(self.capabilities()),
             runtime=str(status.get('runtime') or 'unknown'),
-            context_length=settings.local_model_context_length,
+            context_length=_active_profile().context_length,
             installed=bool(status.get('model_exists')),
         )
 

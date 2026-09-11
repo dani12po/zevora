@@ -80,6 +80,39 @@ class LocalIntelligenceManager:
             {'id': 'skip', 'label': 'Skip Local Model'},
         ]
 
+    def install_model(
+        self,
+        *,
+        repository: str | None = None,
+        filename: str | None = None,
+        dest: str | Path | None = None,
+        expected_size_bytes: int = 0,
+        sha256: str = '',
+        replace: bool = False,
+        progress_cb=None,
+        **kwargs,
+    ) -> dict:
+        """Install the selected GGUF file (default: active Lexi profile).
+
+        Downloads ONLY the single configured file — never the whole Hugging
+        Face repository — with resume, size/SHA-256 verification, and atomic
+        installation. The existing model is never silently overwritten.
+        """
+        from .downloader import download_gguf
+
+        profile = settings.active_local_model_profile
+        return download_gguf(
+            repository=repository or profile.repository,
+            filename=filename or profile.filename,
+            dest=Path(dest).expanduser() if dest else settings.local_model_file,
+            expected_size_bytes=expected_size_bytes or profile.expected_size_bytes,
+            sha256=sha256 or profile.sha256,
+            timeout_seconds=int(kwargs.get('timeout_seconds', 120)),
+            replace=replace,
+            progress_cb=progress_cb,
+            client=kwargs.get('client'),
+        )
+
     def uninstall_package(self, *, approved: bool = False) -> dict:
         """Plan or remove only the configured repository-managed package directory."""
         package = settings.local_model_package_dir.resolve()
@@ -97,6 +130,27 @@ class LocalIntelligenceManager:
                         continue
                     files.append(str(path.relative_to(package)))
                     total_bytes += size
+        # The installer writes the GGUF to settings.local_model_file, which
+        # may live outside the package dir (default: models/...). Include it
+        # in the removal plan only when it is provably ZEVORA-managed: inside
+        # the managed area, or accompanied by the .sha256 sidecar our
+        # installer writes. External files are never touched automatically.
+        managed_model = settings.local_model_file.resolve()
+        sidecar = managed_model.with_name(managed_model.name + '.sha256')
+        try:
+            managed_file_exists = managed_model.is_file()
+        except OSError:
+            managed_file_exists = False
+        try:
+            managed_inside = managed_file_exists and managed_model.is_relative_to(managed_root)
+        except OSError:
+            managed_inside = False
+        installer_sidecar = sidecar.is_file()
+        managed_removable = managed_file_exists and (managed_inside or installer_sidecar)
+        try:
+            managed_model_bytes = managed_model.stat().st_size if managed_removable else 0
+        except OSError:
+            managed_model_bytes = 0
         result = {
             'approved': approved,
             'package': str(package),
@@ -104,12 +158,20 @@ class LocalIntelligenceManager:
             'files': files[:500],
             'file_count': len(files),
             'bytes': total_bytes,
+            'managed_model': str(managed_model) if managed_removable else None,
+            'managed_model_bytes': managed_model_bytes,
+            'managed_model_removed': False,
             'external_models_preserved': True,
             'executed': False,
         }
-        if not approved or not package.is_dir():
+        if not approved or (not package.is_dir() and not managed_removable):
             return result
-        shutil.rmtree(package)
+        if package.is_dir():
+            shutil.rmtree(package)
+        if managed_removable:
+            managed_model.unlink(missing_ok=True)
+            sidecar.unlink(missing_ok=True)
+            result['managed_model_removed'] = True
         return {**result, 'executed': True, 'exists': False}
 
     @staticmethod

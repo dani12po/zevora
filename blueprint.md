@@ -9,7 +9,7 @@ ZEVORA is a hybrid local and cloud AI coding workspace. Extend the existing prov
 ### Zevora Local AI
 
 - Runtime: llama.cpp through `llama-cpp-python`.
-- Model file: `models/zevora-4b-thinking.gguf`.
+- Model file: `models/Lexi-Llama-3-8B-Uncensored-Q5_K_M.gguf` (Lexi Llama 3 8B Q5_K_M via `bartowski/Lexi-Llama-3-8B-Uncensored-GGUF`).
 - Product display name: `Zevora Local AI`.
 - The display identity does not imply that ZEVORA modified or trained the underlying weights.
 - Loading is lazy on the first local generation request.
@@ -52,7 +52,8 @@ tool observations form the bounded context sent to a selected provider.
 
 AUTO mode uses local-first ordering for lightweight text work. Complex,
 architecture, migration, multi-file, long-context, and vision work is
-cloud-first. `LOCAL_ONLY` excludes cloud candidates. `CLOUD_ONLY` excludes local
+cloud-first. `LOCAL_ONLY` excludes cloud candidates (embedded + remote Lexi only).
+`REMOTE_LOCAL_ONLY` allows only the remote Lexi server. `CLOUD_ONLY` excludes local
 candidates.
 
 Task responses retain the legacy contract and add:

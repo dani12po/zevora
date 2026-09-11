@@ -257,7 +257,7 @@ def test_cloud_completion_reports_local_and_all_failed_alternatives(tmp_path, mo
     (Route.CLOUD, ProviderRateLimitError('secret'), 'RATE_LIMIT'),
     (Route.CLOUD, ProviderTimeoutError('secret'), 'TIMEOUT'),
     (Route.CLOUD, ProviderUnavailableError('secret'), 'NETWORK_ERROR'),
-    (Route.LOCAL, ModelNotFoundError('secret'), 'LOCAL_MODEL_UNAVAILABLE'),
+    (Route.LOCAL, ModelNotFoundError('secret'), 'LOCAL_MODEL_MISSING'),
     (Route.CLOUD, RuntimeError('secret'), 'UNKNOWN'),
 ])
 def test_attempt_record_classifies_secret_free_failure(route, error, reason):
@@ -304,7 +304,7 @@ def test_local_to_cloud_fallback_after_quality_rejection(tmp_path, monkeypatch):
     assert calls == ['zevora', 'cloud-model']
     assert [item['route'] for item in result['fallback_trace']] == ['LOCAL', 'CLOUD']
     assert [item['status'] for item in result['fallback_trace']] == ['failed', 'success']
-    assert result['fallback_trace'][0]['failure_reason'] == 'LOCAL_MODEL_UNAVAILABLE'
+    assert result['fallback_trace'][0]['failure_reason'] == 'LOCAL_MODEL_RUNTIME_ERROR'
 
 
 def test_auto_uses_healthy_local_first_for_simple_prompt(tmp_path, monkeypatch):
@@ -370,7 +370,7 @@ def test_auto_reports_local_and_cloud_failures_together(tmp_path, monkeypatch):
     )
     assert [item['source'] for item in trace] == ['local_model', 'cloud_provider']
     assert [item['failure_reason'] for item in trace] == [
-        'LOCAL_MODEL_UNAVAILABLE', 'AUTH_ERROR',
+        'LOCAL_MODEL_RUNTIME_ERROR', 'AUTH_ERROR',
     ]
     assert 'secret' not in str(trace)
 
@@ -454,6 +454,58 @@ def test_task_exact_cache_resolves_locally_without_provider(tmp_path, monkeypatc
     ]
 
 
+def test_task_ask_mode_answers_workspace_prompt_without_project(tmp_path, monkeypatch):
+    """Ask mode is pure Q&A: workspace keywords must not demand a project."""
+    from fastapi import HTTPException as FastHTTPException
+
+    isolated_store = Store(tmp_path / 'agent.db')
+    decision = RoutingDecision(
+        Route.CLOUD, 'openai', 'gpt-4o-mini', 'BEST_CLOUD_MATCH',
+        ['general'], 0.1, [], 0.0,
+    )
+
+    class Registry:
+        def list(self):
+            return [_model('openai', 'gpt-4o-mini')]
+
+    class Intelligence:
+        def build_context(self, *_args, **_kwargs):
+            return ''
+        def extract_knowledge(self, *args):
+            pass
+
+    async def complete(_candidate, _prompt, system, _images):
+        return 'Jawaban chat biasa.', {'input_tokens': 1, 'output_tokens': 2}
+
+    monkeypatch.setattr(main, 'store', isolated_store)
+    monkeypatch.setattr(main, 'model_registry', Registry())
+    monkeypatch.setattr(main, 'intelligence_engine', Intelligence())
+    monkeypatch.setattr(main, '_cloud_candidates', lambda *_args: [decision])
+    monkeypatch.setattr(main, '_provider_completion', complete)
+
+    # Sanity: the same prompt without ask mode demands a project folder.
+    with pytest.raises(FastHTTPException) as raised:
+        asyncio.run(main.task(main.TaskRequest(
+            prompt='buatkan file contoh.html di disk E', chat_mode='auto',
+        )))
+    assert raised.value.detail['code'] == 'PROJECT_REQUIRED'
+
+    result = asyncio.run(main.task(main.TaskRequest(
+        prompt='buatkan file contoh.html di disk E', chat_mode='ask',
+    )))
+    assert result['response'] == 'Jawaban chat biasa.'
+    assert result['reason'] != 'TOOLS_EXECUTED'
+
+
+def test_task_coding_mode_requires_project_for_plain_prompt(tmp_path, monkeypatch):
+    from fastapi import HTTPException as FastHTTPException
+
+    with pytest.raises(FastHTTPException) as raised:
+        asyncio.run(main.task(main.TaskRequest(prompt='halo', chat_mode='coding')))
+    assert raised.value.status_code == 400
+    assert raised.value.detail['code'] == 'PROJECT_REQUIRED'
+
+
 def test_task_generation_reports_discovery_context_and_flow(tmp_path, monkeypatch):
     (tmp_path / 'pyproject.toml').write_text(
         '[project]\nname = "flow-test"\n', encoding='utf-8'
@@ -490,6 +542,9 @@ def test_task_generation_reports_discovery_context_and_flow(tmp_path, monkeypatc
     monkeypatch.setattr(main, 'intelligence_engine', Intelligence())
     monkeypatch.setattr(main, '_cloud_candidates', lambda *_args: [decision])
     monkeypatch.setattr(main, '_provider_completion', complete)
+    workspaces = main.WorkspaceManager(tmp_path / 'workspace.db')
+    workspaces.load(str(tmp_path))
+    monkeypatch.setattr(main, 'workspace_manager', workspaces)
 
     result = asyncio.run(main.task(main.TaskRequest(
         prompt='Explain this project setup', project=str(tmp_path),
@@ -516,7 +571,7 @@ def test_exact_cache_does_not_replay_across_model_signature_change(tmp_path):
     sig_a = 'a' * 64
     sig_b = 'b' * 64
     isolated_store.put_cache(
-        'same prompt', 'answer under model A', 'local', 'qwen3.8-flash-next',
+        'same prompt', 'answer under model A', 'local', 'lexi-llama-3-8b-q5_k_m',
         'coding', model_signature=sig_a,
     )
 
@@ -528,7 +583,7 @@ def test_exact_cache_does_not_replay_across_model_signature_change(tmp_path):
 def test_model_cache_signature_changes_when_quant_changes(monkeypatch):
     from agent.config import settings as live_settings
     from agent.memory.store import model_cache_signature as sig
-    monkeypatch.setattr(live_settings, 'local_model_quant', 'UD-Q4_K_XL')
+    monkeypatch.setattr(live_settings, 'local_model_quant', 'Q5_K_M')
     sig_base = sig()
     monkeypatch.setattr(live_settings, 'local_model_quant', 'Q4_K_M')
     sig_alt = sig()

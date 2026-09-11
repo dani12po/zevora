@@ -147,6 +147,17 @@ class ProviderManifest:
             parsed = urlparse(self.base_url)
             if parsed.scheme not in {"http", "https"} or not parsed.netloc:
                 raise ValueError("provider base_url must be an absolute HTTP(S) URL")
+            # Bound the server-side request surface at save time: public
+            # protocols must point at globally routable hosts, while the
+            # local-dev protocol keeps loopback/LAN but never metadata IPs.
+            from .ssrf import assert_local_endpoint_url, assert_provider_base_url
+            try:
+                if self.protocol == "local-openai-compatible":
+                    assert_local_endpoint_url(self.base_url)
+                else:
+                    assert_provider_base_url(self.base_url)
+            except ValueError as error:
+                raise ValueError(str(error)) from error
         if self.protocol == "custom-runtime":
             if not self.runtime:
                 raise ValueError("custom runtime provider requires a runtime manifest")

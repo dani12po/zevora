@@ -12,9 +12,9 @@ Local context retrieval (knowledge + memory + project index)
 Task classification + capability detection
              ↓
 Adaptive Hybrid Router (complexity × capability × cost × history)
-    ├── LocalProvider: Zevora Local AI
-    │     └── llama.cpp → models/zevora-4b-thinking.gguf (lazy-loaded)
-    └── Cloud providers: OpenAI / Anthropic / xAI / DeepSeek / NVIDIA / Gemini
+    �  +- LocalProvider: Zevora Local AI (embedded Lexi, llama.cpp -> models/Lexi-Llama-3-8B-Uncensored-Q5_K_M.gguf, lazy-loaded)
+    �  +- Remote Lexi (local_remote): external llama.cpp server over OpenAI-compatible /v1 (Colab/Kaggle/self-hosted)
+    �  +- Cloud providers: OpenAI / Anthropic / xAI / DeepSeek / NVIDIA / Gemini
              ↓
 Structured action plan → approval boundary → scoped MCP execution
              ↓
@@ -106,11 +106,16 @@ them. ZEVORA does not modify, train, or take ownership of model weights.
 | **Project Context** | Indexed project metadata for scoped workspace operations |
 | **MCP Tools** | Filesystem, Git, and terminal access scoped to the active project |
 
-Local inference is preferred for lightweight text and coding work. Complex,
-architectural, migration, multi-file, long-context, and vision tasks prefer cloud
-models when available. The `LOCAL_ONLY` and `CLOUD_ONLY` modes constrain routing
+Embedded Lexi (in-process llama.cpp, provider `local`) is preferred for
+lightweight text and coding work, remote Lexi (external llama.cpp server,
+provider `local_remote`) is the next local fallback, and cloud models handle
+complex, architectural, migration, multi-file, long-context, and vision tasks.
+The `LOCAL_ONLY`, `REMOTE_LOCAL_ONLY`, and `CLOUD_ONLY` modes constrain routing
 explicitly. A quality rejection or provider failure advances to the next capable
-candidate, allowing local-to-cloud and cloud-to-local recovery.
+candidate, allowing embedded-to-remote-to-cloud recovery; each failure is
+recorded with a stable reason code (`LOCAL_MODEL_MISSING`,
+`LOCAL_MODEL_RESOURCE_INSUFFICIENT`, `LOCAL_MODEL_RUNTIME_ERROR`,
+`REMOTE_ENDPOINT_UNAVAILABLE`, `REMOTE_MODEL_NOT_FOUND`, `QUALITY_GATE_REJECTED`).
 
 ## Multi-provider gateway
 
@@ -132,7 +137,8 @@ discovered, scored, and routed without requiring code changes.
 `AdaptiveHybridRouter` keeps local and cloud candidate pools while preserving the
 provider registry and model metadata contracts. In `AUTO` mode it orders local
 models first for routine work and cloud models first for complex or vision work.
-`LOCAL_ONLY` and `CLOUD_ONLY` restrict the candidate pool but do not change
+`LOCAL_ONLY` (embedded + remote Lexi), `REMOTE_LOCAL_ONLY` (remote Lexi only),
+and `CLOUD_ONLY` restrict the candidate pool but do not change
 ZEVORA's intrinsic hybrid architecture. A model is eligible only when health,
 availability, explicit capabilities, required tool support, context window,
 local installation state, and package compatibility allow it. Ranking combines

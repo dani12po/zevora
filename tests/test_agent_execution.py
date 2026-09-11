@@ -14,6 +14,20 @@ def stage_names(trace):
     return [stage['stage'] for stage in trace.stages]
 
 
+def test_task_rejects_unregistered_project_path(monkeypatch, tmp_path):
+    class _Workspaces:
+        def projects(self):
+            return []
+
+    monkeypatch.setattr(main, 'workspace_manager', _Workspaces())
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(main.task(main.TaskRequest(
+            prompt='list files', project=str(tmp_path),
+        )))
+    assert error.value.status_code == 403
+    assert error.value.detail['code'] == 'PROJECT_NOT_REGISTERED'
+
+
 def test_selected_workspace_authorizes_write_without_separate_approval(tmp_path):
     executor = ProjectAgentExecutor(tmp_path)
 
@@ -124,6 +138,7 @@ def test_indonesian_workspace_request_without_project_never_falls_back_to_chat()
 def test_task_executes_selected_workspace_write_before_provider_call(tmp_path, monkeypatch):
     manager = main.WorkspaceManager(tmp_path / 'workspace.db')
     monkeypatch.setattr(main, 'workspace_manager', manager)
+    manager.load(str(tmp_path))
 
     def provider_must_not_run(*_args, **_kwargs):
         raise AssertionError('provider should not run after a successful mutation')
@@ -146,6 +161,7 @@ def test_dashboard_chat_may_write_inside_selected_workspace_without_approval(
 ):
     manager = main.WorkspaceManager(tmp_path / 'workspace.db')
     monkeypatch.setattr(main, 'workspace_manager', manager)
+    manager.load(str(tmp_path))
 
     result = asyncio.run(main.task(main.TaskRequest(
         prompt='save a note from dashboard chat',
@@ -165,6 +181,7 @@ def test_dashboard_chat_may_write_inside_selected_workspace_without_approval(
 def test_action_still_blocks_path_escape_without_approval(tmp_path, monkeypatch):
     manager = main.WorkspaceManager(tmp_path / 'workspace.db')
     monkeypatch.setattr(main, 'workspace_manager', manager)
+    manager.load(str(tmp_path))
 
     with pytest.raises(HTTPException) as raised:
         asyncio.run(main.task(main.TaskRequest(
@@ -189,6 +206,7 @@ def test_absolute_path_into_another_workspace_is_blocked(tmp_path, monkeypatch):
     other.mkdir()
     manager = main.WorkspaceManager(tmp_path / 'workspace.db')
     monkeypatch.setattr(main, 'workspace_manager', manager)
+    manager.load(str(selected))
 
     with pytest.raises(HTTPException) as raised:
         asyncio.run(main.task(main.TaskRequest(
@@ -209,6 +227,7 @@ def test_absolute_path_into_another_workspace_is_blocked(tmp_path, monkeypatch):
 def test_approved_action_still_blocks_dangerous_command(tmp_path, monkeypatch):
     manager = main.WorkspaceManager(tmp_path / 'workspace.db')
     monkeypatch.setattr(main, 'workspace_manager', manager)
+    manager.load(str(tmp_path))
 
     with pytest.raises(HTTPException) as raised:
         asyncio.run(main.task(main.TaskRequest(
@@ -232,6 +251,7 @@ def test_approved_html_write_returns_authoritative_local_receipt(tmp_path, monke
     monkeypatch.setattr(main, 'workspace_manager', manager)
     monkeypatch.setattr(main, 'store', Store(tmp_path / 'agent.db'))
     monkeypatch.setattr(main, 'intelligence_engine', intelligence)
+    manager.load(str(tmp_path))
 
     def provider_must_not_run(*_args, **_kwargs):
         raise AssertionError('provider should not run after a successful mutation')
@@ -274,6 +294,7 @@ def test_approved_html_write_returns_authoritative_local_receipt(tmp_path, monke
 def test_failed_workspace_action_never_reaches_response_generation(tmp_path, monkeypatch):
     manager = main.WorkspaceManager(tmp_path / 'workspace.db')
     monkeypatch.setattr(main, 'workspace_manager', manager)
+    manager.load(str(tmp_path))
 
     def provider_must_not_run(*_args, **_kwargs):
         raise AssertionError('provider should not run after a failed action')

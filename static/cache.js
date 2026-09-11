@@ -15,6 +15,7 @@ export async function renderCache() {
 export async function runCleanup() {
   const button = $('btn-cleanup');
   const message = $('cleanup-msg');
+  if (!button || !message) return;
   button.classList.add('btn-loading');
   button.textContent = 'Running...';
   try {

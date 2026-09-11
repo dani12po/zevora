@@ -127,6 +127,36 @@ def test_local_package_uninstall_rejects_external_directory(tmp_path, monkeypatc
         LocalIntelligenceManager().uninstall_package(approved=True)
 
 
+def test_local_package_uninstall_removes_managed_model_file(tmp_path, monkeypatch):
+    import agent.models.manager as manager_module
+
+    root = tmp_path / 'repo'
+    package = root / 'data' / 'models' / 'managed-package'
+    package.mkdir(parents=True)
+    model_file = root / 'data' / 'models' / 'model.gguf'
+    model_file.write_bytes(b'managed-weights')
+    (root / 'data' / 'models' / 'model.gguf.sha256').write_text('deadbeef  model.gguf\n', encoding='utf-8')
+    monkeypatch.setattr(manager_module, 'ROOT', root)
+    monkeypatch.setattr(manager_module.settings, 'local_model_package_path', str(package))
+    monkeypatch.setattr(
+        manager_module.settings.active_local_model_profile,
+        'model_file_path', str(model_file),
+    )
+    try:
+        manager = LocalIntelligenceManager()
+        preview = manager.uninstall_package()
+        assert preview['executed'] is False
+        assert preview['managed_model'] == str(model_file.resolve())
+        assert model_file.exists()
+        removed = manager.uninstall_package(approved=True)
+        assert removed['executed'] is True
+        assert removed['managed_model_removed'] is True
+        assert not model_file.exists()
+        assert not (root / 'data' / 'models' / 'model.gguf.sha256').exists()
+    finally:
+        monkeypatch.undo()
+
+
 def test_evolution_status_api_does_not_expose_skill_instructions(tmp_path, monkeypatch):
     registry = SkillRegistry(tmp_path / 'skills.db')
     registry.register(Skill(
