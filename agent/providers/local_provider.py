@@ -108,7 +108,14 @@ def check_local_resources(model_path: Path) -> dict:
     context_overhead_bytes = max(
         512 * 1024 * 1024, max(0, profile.context_length) * 96 * 1024,
     )
-    required_bytes = file_bytes + context_overhead_bytes + 256 * 1024 * 1024
+    # llama.cpp memory-maps the GGUF weights, so the file is not fully resident
+    # in RAM; only the KV/context cache plus the weight pages actually touched
+    # during inference must fit. Requiring the entire file size needlessly bricks
+    # machines (e.g. 16 GiB systems with ~4 GiB free) that can run an 8B Q4 model
+    # comfortably under mmap. We budget a conservative resident working set:
+    # ~15% of the weights plus the context/scratch overhead.
+    weight_resident_bytes = int(file_bytes * 0.15)
+    required_bytes = weight_resident_bytes + context_overhead_bytes + 256 * 1024 * 1024
     available_bytes = psutil.virtual_memory().available
     report = {
         'model_bytes': file_bytes,
