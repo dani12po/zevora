@@ -1,0 +1,590 @@
+import asyncio
+
+import pytest
+
+import main
+from agent.memory.store import Store, model_cache_signature
+from agent.providers.errors import (
+    ModelNotFoundError,
+    ProviderAuthenticationError,
+    ProviderRateLimitError,
+    ProviderTimeoutError,
+    ProviderUnavailableError,
+)
+from agent.routing.fallback import with_fallback
+from agent.routing.hybrid_router import Route, RoutingDecision
+from agent.routing.model_selector import Selection
+
+def test_fallback_tries_next_capable_candidate():
+    candidates=[Selection('first','a',1,'test'),Selection('second','b',1,'test')]
+    async def execute(candidate):
+        if candidate.provider=='first': raise ProviderUnavailableError('offline')
+        return 'ok'
+    result,errors=asyncio.run(with_fallback(candidates,execute))
+    assert result=='ok' and errors[0]['provider']=='first'
+
+
+def _model(provider, model_id):
+    return {
+        'provider': provider, 'model_id': model_id,
+        'capabilities': ['general', 'coding', 'reasoning'],
+        'capability_profile': {
+            'instruction_score': .9, 'coding_score': .9, 'reasoning_score': .9,
+        },
+        'availability': 'verified', 'health_status': 'healthy',
+        'input_price': 0, 'output_price': 0, 'supports_tools': True,
+    }
+
+
+def test_cloud_completion_refreshes_empty_registry_and_uses_discovered_provider(
+    tmp_path, monkeypatch
+):
+    models = []
+    refreshed = []
+
+    class Registry:
+        def list(self):
+            return list(models)
+
+    class Discovery:
+        def __init__(self, registry):
+            assert registry is main.model_registry
+
+        async def refresh(self, provider_name=None):
+            refreshed.append(provider_name)
+            models.append(_model('openai', 'discovered-model'))
+            return [{'provider': 'openai', 'health_status': 'healthy'}]
+
+    class Provider:
+        async def complete_for_model(self, _prompt, _system, model_id):
+            assert model_id == 'discovered-model'
+            return 'automatic response', {'input_tokens': 2, 'output_tokens': 3}
+
+    monkeypatch.setattr(main, 'store', Store(tmp_path / 'agent.db'))
+    monkeypatch.setattr(main, 'model_registry', Registry())
+    monkeypatch.setattr(main, 'ProviderDiscovery', Discovery)
+    monkeypatch.setattr(main, 'get_provider', lambda _name: Provider())
+    monkeypatch.setattr(main.settings, 'cloud_fallback', True)
+    monkeypatch.setattr(
+        'agent.routing.hybrid_router.provider_policy',
+        lambda _name: {'enabled': True, 'routing_priority': 50, 'default_model': ''},
+    )
+
+    result = asyncio.run(main._cloud_completion('explain this', 'be concise'))
+
+    assert result['response'] == 'automatic response'
+    assert result['provider'] == 'openai'
+    assert refreshed == [None]
+
+
+def test_routing_candidates_bounds_slow_discovery(monkeypatch):
+    class Registry:
+        def list(self):
+            return []
+
+    class Discovery:
+        def __init__(self, _registry):
+            pass
+
+        async def refresh(self, _provider_name=None):
+            await asyncio.sleep(1)
+
+    monkeypatch.setattr(main, 'model_registry', Registry())
+    monkeypatch.setattr(main, 'ProviderDiscovery', Discovery)
+    monkeypatch.setattr(main.settings, 'discovery_timeout_seconds', .01)
+
+    models, candidates = asyncio.run(main._routing_candidates('explain this'))
+
+    assert models == []
+    assert candidates == []
+
+
+def test_cloud_completion_does_not_refresh_when_registry_has_healthy_candidate(
+    tmp_path, monkeypatch
+):
+    model = _model('openai', 'ready-model')
+
+    class Registry:
+        def list(self):
+            return [model]
+
+    class Discovery:
+        def __init__(self, _registry):
+            pass
+
+        async def refresh(self, _provider_name=None):
+            raise AssertionError('healthy registry must not be refreshed per chat')
+
+    class Provider:
+        async def complete_for_model(self, _prompt, _system, _model_id):
+            return 'ready response', {'input_tokens': 1, 'output_tokens': 1}
+
+    monkeypatch.setattr(main, 'store', Store(tmp_path / 'agent.db'))
+    monkeypatch.setattr(main, 'model_registry', Registry())
+    monkeypatch.setattr(main, 'ProviderDiscovery', Discovery)
+    monkeypatch.setattr(main, 'get_provider', lambda _name: Provider())
+    monkeypatch.setattr(main.settings, 'cloud_fallback', True)
+    monkeypatch.setattr(
+        'agent.routing.hybrid_router.provider_policy',
+        lambda _name: {'enabled': True, 'routing_priority': 50, 'default_model': ''},
+    )
+
+    result = asyncio.run(main._cloud_completion('explain this', 'be concise'))
+
+    assert result['response'] == 'ready response'
+
+
+def test_cloud_completion_tries_another_model_from_same_provider(tmp_path, monkeypatch):
+    models = [_model('first', 'model-a'), _model('first', 'model-b')]
+
+    class Registry:
+        def list(self):
+            return models
+
+    class Provider:
+        async def complete_for_model(self, _prompt, _system, model_id):
+            if model_id == 'model-a':
+                raise RuntimeError('primary unavailable')
+            return 'recovered response', {'input_tokens': 2, 'output_tokens': 3}
+
+    monkeypatch.setattr(main, 'store', Store(tmp_path / 'agent.db'))
+    monkeypatch.setattr(main, 'model_registry', Registry())
+    monkeypatch.setattr(main, 'get_provider', lambda _name: Provider())
+    monkeypatch.setattr(main.settings, 'cloud_fallback', True)
+    monkeypatch.setattr(
+        'agent.routing.hybrid_router.provider_policy',
+        lambda _name: {'enabled': True, 'routing_priority': 50, 'default_model': 'model-a'},
+    )
+
+    result = asyncio.run(main._cloud_completion('explain this', 'be concise'))
+
+    assert result['model'] == 'model-b'
+    assert [item['status'] for item in result['fallback_trace']] == ['failed', 'success']
+    assert result['fallback_trace'][0]['error'] == 'RuntimeError'
+
+
+def test_cloud_completion_emits_ordered_attempt_events_for_fallback(tmp_path, monkeypatch):
+    models = [_model('first', 'model-a'), _model('second', 'model-b'), _model('third', 'model-c')]
+
+    class Registry:
+        def list(self):
+            return models
+
+    class Provider:
+        async def complete_for_model(self, _prompt, _system, model_id):
+            if model_id != 'model-c':
+                raise RuntimeError(f'{model_id} unavailable')
+            return 'recovered response', {'input_tokens': 2, 'output_tokens': 3}
+
+    events = []
+
+    async def capture(event):
+        events.append(event)
+
+    monkeypatch.setattr(main, 'store', Store(tmp_path / 'agent.db'))
+    monkeypatch.setattr(main, 'model_registry', Registry())
+    monkeypatch.setattr(main, 'get_provider', lambda _name: Provider())
+    monkeypatch.setattr(main.settings, 'cloud_fallback', True)
+    monkeypatch.setattr(main.settings, 'routing_max_attempts', 3)
+    monkeypatch.setattr(
+        'agent.routing.hybrid_router.provider_policy',
+        lambda _name: {'enabled': True, 'routing_priority': 50, 'default_model': ''},
+    )
+
+    callback_token = main._stream_event_callback.set(capture)
+    request_token = main._workflow_request_id.set('fallback-test')
+    main._progress_start('fallback-test')
+    try:
+        result = asyncio.run(main._cloud_completion('explain this', 'be concise'))
+    finally:
+        main._workflow_request_id.reset(request_token)
+        main._stream_event_callback.reset(callback_token)
+
+    assert result['response'] == 'recovered response'
+    assert [
+        (event['event'], event['data']['model'], event['data']['status'])
+        for event in events
+    ] == [
+        ('provider_selected', 'model-a', 'running'),
+        ('provider_fallback', 'model-a', 'failed'),
+        ('provider_selected', 'model-b', 'running'),
+        ('provider_fallback', 'model-b', 'failed'),
+        ('provider_selected', 'model-c', 'running'),
+        ('provider_selected', 'model-c', 'success'),
+    ]
+
+
+def test_cloud_completion_reports_local_and_all_failed_alternatives(tmp_path, monkeypatch):
+    models = [_model('first', 'model-a'), _model('second', 'model-b')]
+
+    class Registry:
+        def list(self):
+            return models
+
+    class Provider:
+        async def complete_for_model(self, _prompt, _system, _model_id):
+            raise ConnectionError('secret provider detail')
+
+    monkeypatch.setattr(main, 'store', Store(tmp_path / 'agent.db'))
+    monkeypatch.setattr(main, 'model_registry', Registry())
+    monkeypatch.setattr(main, 'get_provider', lambda _name: Provider())
+    monkeypatch.setattr(main.settings, 'cloud_fallback', True)
+    monkeypatch.setattr(
+        'agent.routing.hybrid_router.provider_policy',
+        lambda _name: {'enabled': True, 'routing_priority': 50, 'default_model': ''},
+    )
+
+    with pytest.raises(main.HTTPException) as caught:
+        asyncio.run(main._cloud_completion('explain this', 'be concise'))
+
+    detail = caught.value.detail
+    assert detail['code'] == 'AI_EXECUTION_ERROR'
+    assert detail['message'] == (
+        '2 provider cloud (first, second) semuanya gagal merespons. '
+        'Local Intelligence tidak dicoba karena dinonaktifkan atau tidak dikonfigurasi.'
+    )
+    assert len(detail['fallback_trace']) == 2
+    assert all(item['route'] == 'CLOUD' for item in detail['fallback_trace'])
+    assert all(item['source'] == 'cloud_provider' for item in detail['fallback_trace'])
+    assert all(item['status'] == 'failed' for item in detail['fallback_trace'])
+    assert all(item['failure_reason'] == 'NETWORK_ERROR' for item in detail['fallback_trace'])
+    assert all(item['failure_message'] == 'The provider could not be reached.' for item in detail['fallback_trace'])
+    assert 'secret provider detail' not in str(detail)
+
+
+@pytest.mark.parametrize(('route', 'error', 'reason'), [
+    (Route.CLOUD, ProviderAuthenticationError('secret'), 'AUTH_ERROR'),
+    (Route.CLOUD, ProviderRateLimitError('secret'), 'RATE_LIMIT'),
+    (Route.CLOUD, ProviderTimeoutError('secret'), 'TIMEOUT'),
+    (Route.CLOUD, ProviderUnavailableError('secret'), 'NETWORK_ERROR'),
+    (Route.LOCAL, ModelNotFoundError('secret'), 'LOCAL_MODEL_MISSING'),
+    (Route.CLOUD, RuntimeError('secret'), 'UNKNOWN'),
+])
+def test_attempt_record_classifies_secret_free_failure(route, error, reason):
+    decision = RoutingDecision(
+        route, 'local' if route is Route.LOCAL else 'cloud', 'model', 'test',
+        ['general'], 0.1, [], 0.0,
+    )
+
+    record = main._attempt_record(decision, 'failed', error)
+
+    assert record['source'] == ('local_model' if route is Route.LOCAL else 'cloud_provider')
+    assert record['failure_reason'] == reason
+    assert 'secret' not in str(record)
+
+
+def test_local_to_cloud_fallback_after_quality_rejection(tmp_path, monkeypatch):
+    models = [_model('local', 'zevora'), _model('cloud', 'cloud-model')]
+
+    class Registry:
+        def list(self):
+            return models
+
+    calls = []
+
+    class Provider:
+        async def complete_for_model(self, _prompt, _system, model_id):
+            calls.append(model_id)
+            if model_id == 'zevora':
+                raise ProviderUnavailableError('local model is not loaded')
+            return 'cloud recovery', {'input_tokens': 1, 'output_tokens': 2}
+
+    monkeypatch.setattr(main, 'store', Store(tmp_path / 'agent.db'))
+    monkeypatch.setattr(main, 'model_registry', Registry())
+    monkeypatch.setattr(main, 'get_provider', lambda _name: Provider())
+    monkeypatch.setattr(main.settings, 'cloud_fallback', True)
+    monkeypatch.setattr(
+        'agent.routing.hybrid_router.provider_policy',
+        lambda _name: {'enabled': True, 'routing_priority': 50, 'default_model': ''},
+    )
+
+    result = asyncio.run(main._cloud_completion('explain this', 'be concise'))
+
+    assert result['response'] == 'cloud recovery'
+    assert calls == ['zevora', 'cloud-model']
+    assert [item['route'] for item in result['fallback_trace']] == ['LOCAL', 'CLOUD']
+    assert [item['status'] for item in result['fallback_trace']] == ['failed', 'success']
+    assert result['fallback_trace'][0]['failure_reason'] == 'LOCAL_MODEL_RUNTIME_ERROR'
+
+
+def test_auto_uses_healthy_local_first_for_simple_prompt(tmp_path, monkeypatch):
+    models = [_model('local', 'zevora'), _model('cloud', 'cloud-model')]
+    calls = []
+
+    class Registry:
+        def list(self):
+            return models
+
+    class Provider:
+        async def complete_for_model(self, _prompt, _system, model_id):
+            calls.append(model_id)
+            return f'{model_id} response', {'input_tokens': 1, 'output_tokens': 2}
+
+    monkeypatch.setattr(main, 'store', Store(tmp_path / 'agent.db'))
+    monkeypatch.setattr(main, 'model_registry', Registry())
+    monkeypatch.setattr(main, 'get_provider', lambda _name: Provider())
+    monkeypatch.setattr(main.settings, 'cloud_fallback', True)
+    monkeypatch.setattr(main.settings, 'routing_mode', 'AUTO')
+    monkeypatch.setattr(
+        'agent.routing.hybrid_router.provider_policy',
+        lambda _name: {'enabled': True, 'routing_priority': 50, 'default_model': ''},
+    )
+
+    result = asyncio.run(main._cloud_completion('explain this', 'be concise'))
+
+    assert result['response'] == 'zevora response'
+    assert calls == ['zevora']
+    assert result['fallback_trace'][0]['source'] == 'local_model'
+
+
+def test_auto_reports_local_and_cloud_failures_together(tmp_path, monkeypatch):
+    models = [_model('local', 'zevora'), _model('cloud', 'cloud-model')]
+
+    class Registry:
+        def list(self):
+            return models
+
+    class Provider:
+        async def complete_for_model(self, _prompt, _system, model_id):
+            if model_id == 'zevora':
+                raise ProviderUnavailableError('local secret')
+            raise ProviderAuthenticationError('cloud secret')
+
+    monkeypatch.setattr(main, 'store', Store(tmp_path / 'agent.db'))
+    monkeypatch.setattr(main, 'model_registry', Registry())
+    monkeypatch.setattr(main, 'get_provider', lambda _name: Provider())
+    monkeypatch.setattr(main.settings, 'cloud_fallback', True)
+    monkeypatch.setattr(main.settings, 'routing_mode', 'AUTO')
+    monkeypatch.setattr(
+        'agent.routing.hybrid_router.provider_policy',
+        lambda _name: {'enabled': True, 'routing_priority': 50, 'default_model': ''},
+    )
+
+    with pytest.raises(main.HTTPException) as caught:
+        asyncio.run(main._cloud_completion('explain this', 'be concise'))
+
+    detail = caught.value.detail
+    trace = detail['fallback_trace']
+    assert detail['message'] == (
+        'Local Intelligence dan 1 provider cloud (cloud) semuanya gagal merespons.'
+    )
+    assert [item['source'] for item in trace] == ['local_model', 'cloud_provider']
+    assert [item['failure_reason'] for item in trace] == [
+        'LOCAL_MODEL_RUNTIME_ERROR', 'AUTH_ERROR',
+    ]
+    assert 'secret' not in str(trace)
+
+
+def test_local_only_failure_message_does_not_claim_cloud_was_tried():
+    trace = [{
+        'source': 'local_model', 'route': 'LOCAL', 'provider': 'local',
+        'model': 'zevora', 'status': 'failed',
+    }]
+
+    message = main._fallback_failure_message(trace)
+
+    assert message == (
+        'Local Intelligence gagal, dan tidak ada provider cloud yang terkonfigurasi '
+        'untuk fallback. Tambahkan API key di halaman Providers agar ada cadangan otomatis.'
+    )
+
+
+def test_cloud_to_local_fallback_after_cloud_failure(tmp_path, monkeypatch):
+    models = [_model('local', 'zevora'), _model('cloud', 'cloud-model')]
+
+    class Registry:
+        def list(self):
+            return models
+
+    calls = []
+
+    class Provider:
+        async def complete_for_model(self, _prompt, _system, model_id):
+            calls.append(model_id)
+            if model_id == 'cloud-model':
+                raise ConnectionError('offline')
+            return 'local recovery', {'input_tokens': 1, 'output_tokens': 2}
+
+    monkeypatch.setattr(main, 'store', Store(tmp_path / 'agent.db'))
+    monkeypatch.setattr(main, 'model_registry', Registry())
+    monkeypatch.setattr(main, 'get_provider', lambda _name: Provider())
+    monkeypatch.setattr(main.settings, 'cloud_fallback', True)
+    monkeypatch.setattr(main.settings, 'routing_mode', 'AUTO')
+    monkeypatch.setattr(
+        'agent.routing.hybrid_router.provider_policy',
+        lambda _name: {'enabled': True, 'routing_priority': 50, 'default_model': ''},
+    )
+
+    result = asyncio.run(main._cloud_completion(
+        'migrate and redesign the whole project architecture', 'be concise'
+    ))
+
+    assert result['response'] == 'local recovery'
+    assert calls == ['cloud-model', 'zevora']
+    assert [item['route'] for item in result['fallback_trace']] == ['CLOUD', 'LOCAL']
+    assert [item['status'] for item in result['fallback_trace']] == ['failed', 'success']
+
+
+def test_task_exact_cache_resolves_locally_without_provider(tmp_path, monkeypatch):
+    isolated_store = Store(tmp_path / 'agent.db')
+    isolated_store.put_cache(
+        'cached question', 'cached answer', 'openai', 'model-a', 'general',
+        model_signature=model_cache_signature(),
+    )
+    monkeypatch.setattr(main, 'store', isolated_store)
+    monkeypatch.setattr(
+        main, 'get_provider',
+        lambda _name: (_ for _ in ()).throw(AssertionError('provider must not run')),
+    )
+
+    result = asyncio.run(main.task(main.TaskRequest(prompt='cached question')))
+
+    assert result['route'] == 'CACHE'
+    assert result['response'] == 'cached answer'
+    assert result['context_status'] == 'CACHE_SUFFICIENT'
+    assert result['project_discovery'] is None
+    assert result['flow'] == {
+        'workspace': 'NOT_SELECTED', 'discovery': 'SKIPPED',
+        'context': 'CACHE_SUFFICIENT', 'route': 'CACHE',
+        'action': 'SKIPPED', 'verification': 'SKIPPED',
+        'knowledge': 'RETRIEVED',
+    }
+    assert result['fallback_trace'] == [
+        {'source': 'local', 'status': 'success', 'kind': 'exact_cache'}
+    ]
+
+
+def test_task_ask_mode_answers_workspace_prompt_without_project(tmp_path, monkeypatch):
+    """Ask mode is pure Q&A: workspace keywords must not demand a project."""
+    from fastapi import HTTPException as FastHTTPException
+
+    isolated_store = Store(tmp_path / 'agent.db')
+    decision = RoutingDecision(
+        Route.CLOUD, 'openai', 'gpt-4o-mini', 'BEST_CLOUD_MATCH',
+        ['general'], 0.1, [], 0.0,
+    )
+
+    class Registry:
+        def list(self):
+            return [_model('openai', 'gpt-4o-mini')]
+
+    class Intelligence:
+        def build_context(self, *_args, **_kwargs):
+            return ''
+        def extract_knowledge(self, *args):
+            pass
+
+    async def complete(_candidate, _prompt, system, _images):
+        return 'Jawaban chat biasa.', {'input_tokens': 1, 'output_tokens': 2}
+
+    monkeypatch.setattr(main, 'store', isolated_store)
+    monkeypatch.setattr(main, 'model_registry', Registry())
+    monkeypatch.setattr(main, 'intelligence_engine', Intelligence())
+    monkeypatch.setattr(main, '_cloud_candidates', lambda *_args: [decision])
+    monkeypatch.setattr(main, '_provider_completion', complete)
+
+    # Sanity: the same prompt without ask mode demands a project folder.
+    with pytest.raises(FastHTTPException) as raised:
+        asyncio.run(main.task(main.TaskRequest(
+            prompt='buatkan file contoh.html di disk E', chat_mode='auto',
+        )))
+    assert raised.value.detail['code'] == 'PROJECT_REQUIRED'
+
+    result = asyncio.run(main.task(main.TaskRequest(
+        prompt='buatkan file contoh.html di disk E', chat_mode='ask',
+    )))
+    assert result['response'] == 'Jawaban chat biasa.'
+    assert result['reason'] != 'TOOLS_EXECUTED'
+
+
+def test_task_coding_mode_requires_project_for_plain_prompt(tmp_path, monkeypatch):
+    from fastapi import HTTPException as FastHTTPException
+
+    with pytest.raises(FastHTTPException) as raised:
+        asyncio.run(main.task(main.TaskRequest(prompt='halo', chat_mode='coding')))
+    assert raised.value.status_code == 400
+    assert raised.value.detail['code'] == 'PROJECT_REQUIRED'
+
+
+def test_task_generation_reports_discovery_context_and_flow(tmp_path, monkeypatch):
+    (tmp_path / 'pyproject.toml').write_text(
+        '[project]\nname = "flow-test"\n', encoding='utf-8'
+    )
+    (tmp_path / 'app.py').write_text('print("hello")\n', encoding='utf-8')
+    isolated_store = Store(tmp_path / 'agent.db')
+    extracted = []
+    provider_systems = []
+    model = _model('local', 'zevora')
+    decision = RoutingDecision(
+        Route.LOCAL, 'local', 'zevora', 'BEST_LOCAL_MATCH',
+        ['general'], 0.1, [], 0.0,
+    )
+
+    class Registry:
+        def list(self):
+            return [model]
+
+    class Intelligence:
+        def build_context(self, *_args, **_kwargs):
+            return 'Relevant knowledge:\n- Use the project manifest.'
+
+        def extract_knowledge(self, *args):
+            extracted.append(args)
+
+    async def complete(_candidate, _prompt, system, _images):
+        provider_systems.append(system)
+        return 'The project manifest defines the application package.', {
+            'input_tokens': 4, 'output_tokens': 7,
+        }
+
+    monkeypatch.setattr(main, 'store', isolated_store)
+    monkeypatch.setattr(main, 'model_registry', Registry())
+    monkeypatch.setattr(main, 'intelligence_engine', Intelligence())
+    monkeypatch.setattr(main, '_cloud_candidates', lambda *_args: [decision])
+    monkeypatch.setattr(main, '_provider_completion', complete)
+    workspaces = main.WorkspaceManager(tmp_path / 'workspace.db')
+    workspaces.load(str(tmp_path))
+    monkeypatch.setattr(main, 'workspace_manager', workspaces)
+
+    result = asyncio.run(main.task(main.TaskRequest(
+        prompt='Explain this project setup', project=str(tmp_path),
+    )))
+
+    assert result['route'] == 'LOCAL'
+    assert result['context_status'] == 'RETRIEVAL_ENRICHED'
+    assert result['project_discovery']['languages'] == ['Python']
+    assert 'pyproject.toml' in result['project_discovery']['manifests']
+    assert result['flow'] == {
+        'workspace': 'SELECTED', 'discovery': 'COMPLETE',
+        'context': 'RETRIEVAL_ENRICHED', 'route': 'LOCAL',
+        'action': 'SKIPPED', 'verification': 'SKIPPED',
+        'knowledge': 'EXTRACTED',
+    }
+    assert 'Relevant knowledge' in provider_systems[0]
+    assert 'Project discovery (authoritative local index):' in provider_systems[0]
+    assert 'Languages: Python' in provider_systems[0]
+    assert extracted[0][3:5] == ('local', 'zevora')
+
+
+def test_exact_cache_does_not_replay_across_model_signature_change(tmp_path):
+    isolated_store = Store(tmp_path / 'agent.db')
+    sig_a = 'a' * 64
+    sig_b = 'b' * 64
+    isolated_store.put_cache(
+        'same prompt', 'answer under model A', 'local', 'lexi-llama-3-8b-q5_k_m',
+        'coding', model_signature=sig_a,
+    )
+
+    assert isolated_store.get_cache('same prompt', '', sig_a) is not None
+    assert isolated_store.get_cache('same prompt', '', sig_b) is None
+    assert isolated_store.get_cache('same prompt', '', sig_a)['response'] == 'answer under model A'
+
+
+def test_model_cache_signature_changes_when_quant_changes(monkeypatch):
+    from agent.config import settings as live_settings
+    from agent.memory.store import model_cache_signature as sig
+    monkeypatch.setattr(live_settings, 'local_model_quant', 'Q5_K_M')
+    sig_base = sig()
+    monkeypatch.setattr(live_settings, 'local_model_quant', 'Q4_K_M')
+    sig_alt = sig()
+    assert sig_base != sig_alt

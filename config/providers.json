@@ -1,0 +1,105 @@
+{
+  "providers": {
+    "local": {
+      "enabled": true,
+      "routing_priority": 100,
+      "default_model": "lexi-llama-3-8b-q4_k_m",
+      "supports_vision": false,
+      "runtime": "llamacpp",
+      "model_repository": "bartowski/Lexi-Llama-3-8B-Uncensored-GGUF",
+      "quantization": "q4_k_m",
+      "model_path": "models/Lexi-Llama-3-8B-Uncensored-q4_k_m.gguf",
+      "context_length": 8192,
+      "max_output_tokens": 2048,
+      "capability_profile": {
+        "instruction_score": 0.9,
+        "coding_score": 0.86,
+        "reasoning_score": 0.84
+      },
+      "model_profile": {
+        "provider_id": "local",
+        "model_id": "lexi-llama-3-8b-q4_k_m",
+        "display_name": "Lexi Llama 3 8B q4_k_m",
+        "repository": "bartowski/Lexi-Llama-3-8B-Uncensored-GGUF",
+        "filename": "Lexi-Llama-3-8B-Uncensored-q4_k_m.gguf",
+        "quantization": "q4_k_m",
+        "runtime": "llamacpp",
+        "format": "gguf",
+        "context_length": 8192,
+        "max_output_tokens": 2048,
+        "temperature": 0.4,
+        "batch_size": 512,
+        "threads": 0,
+        "gpu_layers": 0,
+        "expected_size_bytes": 0,
+        "sha256": "",
+        "capabilities": [
+          "chat",
+          "instruction"
+        ],
+        "source": "huggingface",
+        "license": "apache-2.0",
+        "deployment_mode": "bundled",
+        "model_file_path": ""
+      }
+    },
+    "local_remote": {
+      "enabled": false,
+      "routing_priority": 90,
+      "default_model": "lexi-llama-3-8b-q4_k_m",
+      "supports_vision": false,
+      "runtime": "llamacpp",
+      "protocol": "openai-compatible",
+      "base_url": "",
+      "model_repository": "bartowski/Lexi-Llama-3-8B-Uncensored-GGUF",
+      "quantization": "q4_k_m",
+      "context_length": 8192,
+      "max_output_tokens": 2048,
+      "streaming": true,
+      "capability_profile": {
+        "instruction_score": 0.9,
+        "coding_score": 0.86,
+        "reasoning_score": 0.84
+      }
+    },
+    "openai": {
+      "enabled": false,
+      "routing_priority": 90,
+      "supports_vision": false,
+      "default_model": "gpt-4o-mini"
+    },
+    "anthropic": {
+      "enabled": false,
+      "routing_priority": 95,
+      "default_model": "claude-3-5-haiku-latest",
+      "supports_vision": false
+    },
+    "deepseek": {
+      "enabled": true,
+      "routing_priority": 85,
+      "default_model": "deepseek-chat",
+      "supports_vision": true
+    },
+    "xai": {
+      "enabled": false,
+      "routing_priority": 80,
+      "default_model": "grok-3-mini",
+      "supports_vision": false
+    },
+    "gemini": {
+      "enabled": false,
+      "routing_priority": 75,
+      "default_model": "gemini-2.0-flash",
+      "supports_vision": false
+    },
+    "nvidia": {
+      "enabled": true,
+      "routing_priority": 30,
+      "default_model": "z-ai/glm-5.2",
+      "supports_vision": false
+    }
+  },
+  "model_overrides": {},
+  "custom_providers": [],
+  "provider_schema_version": 2
+}
