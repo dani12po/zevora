@@ -1,4 +1,4 @@
-import {$, api, badge, emptyState, escapeHtml, exposeHandlers, pageWrap, setPanel, userErrorMessage} from './core.js?v=20260819-3';
+import {$, api, badge, emptyState, escapeHtml, exposeHandlers, pageWrap, setPanel, userErrorMessage} from './core.js?v=20261103-2';
 
 const customManifestCache = new Map();
 const providerHealthCache = new Map();

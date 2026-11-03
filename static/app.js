@@ -1,22 +1,23 @@
-import {$, api, navigate, registerRoutes, render, setSidebarOpen} from './core.js?v=20260819-3';
-import {initWorkspaceShell, syncWorkspaceLayout} from './workspace.js?v=20260819-3';
-import {initTerminalWorkspace} from './terminal-workspace.js?v=20260819-3';
-import {checkGateway, createProject, loadProject, pickProject, refreshProjects, renderChat, renderComposerItems, syncWorkspaceAccess, wireChatEvents} from './chat.js?v=20260819-3';
-import {confirmRenameChat, newChat, refreshSidebarChats, renderChatVault} from './chats.js?v=20260819-3';
-import {wireMarkdownActions} from './markdown.js?v=20260819-3';
-import {renderDocs} from './docs.js?v=20260819-3';
-import {renderProviders} from './providers.js?v=20260819-3';
-import {renderLocalAI} from './local-ai.js?v=20260819-3';
-import {renderModelRouter} from './model-router.js?v=20260819-3';
-import {renderMCP} from './mcp.js?v=20260819-3';
-import {configureTerminal, renderTerminal} from './terminal.js?v=20260819-3';
-import {renderFilesystem} from './filesystem.js?v=20260819-3';
-import {renderMemory} from './memory.js?v=20260819-3';
-import {renderCache} from './cache.js?v=20260819-3';
-import {renderUsage} from './usage.js?v=20260819-3';
-import {renderSettings} from './settings.js?v=20260819-3';
-import {maybeShowOnboarding} from './onboarding.js?v=20260819-3';
-import {renderSchedules} from './schedules.js?v=20260819-3';
+import {$, api, navigate, registerRoutes, render, setSidebarOpen} from './core.js?v=20261103-2';
+import {initWorkspaceShell, syncWorkspaceLayout} from './workspace.js?v=20261103-2';
+import {initTerminalWorkspace} from './terminal-workspace.js?v=20261103-2';
+import {checkGateway, createProject, loadProject, pickProject, refreshProjects, renderChat, renderComposerItems, syncWorkspaceAccess, wireChatEvents} from './chat.js?v=20261103-2';
+import {confirmRenameChat, newChat, refreshSidebarChats, renderChatVault} from './chats.js?v=20261103-2';
+import {wireMarkdownActions} from './markdown.js?v=20261103-2';
+import {renderDocs} from './docs.js?v=20261103-2';
+import {renderProviders} from './providers.js?v=20261103-2';
+import {renderLocalAI} from './local-ai.js?v=20261103-2';
+import {renderModelRouter} from './model-router.js?v=20261103-2';
+import {renderMCP} from './mcp.js?v=20261103-2';
+import {configureTerminal, renderTerminal} from './terminal.js?v=20261103-2';
+import {renderFilesystem} from './filesystem.js?v=20261103-2';
+import {renderMemory} from './memory.js?v=20261103-2';
+import {renderCache} from './cache.js?v=20261103-2';
+import {renderUsage} from './usage.js?v=20261103-2';
+import {renderSettings} from './settings.js?v=20261103-2';
+import {maybeShowOnboarding} from './onboarding.js?v=20261103-2';
+import {renderSchedules} from './schedules.js?v=20261103-2';
+import {renderTelegram} from './telegram.js?v=20261103-2';
 
 const workspaceRoute = handler => async () => {
   syncWorkspaceLayout(location.pathname);
@@ -42,6 +43,7 @@ export const ROUTES = {
   '/cache': standardRoute(renderCache),
   '/usage': standardRoute(renderUsage),
   '/schedules': standardRoute(renderSchedules),
+  '/telegram':  standardRoute(renderTelegram),
   '/settings': standardRoute(renderSettings),
 };
 

@@ -1,4 +1,4 @@
-import {renderMarkdown} from './markdown.js?v=20260819-3';
+import {renderMarkdown} from './markdown.js?v=20261103-2';
 
 const activeReveals = new Set();
 

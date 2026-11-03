@@ -23,6 +23,8 @@ const navByPath = {
   '/memory': 'nav-memory',
   '/cache': 'nav-cache',
   '/usage': 'nav-usage',
+  '/schedules': 'nav-schedules',
+  '/telegram': 'nav-telegram',
   '/docs': 'nav-docs',
   '/settings': 'nav-settings',
 };

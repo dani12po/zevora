@@ -1,6 +1,6 @@
-import {$, api, state, userErrorMessage} from './core.js?v=20260819-3';
-import {appendMessage, replaceAssistantMessage} from './chats.js?v=20260819-3';
-import {syncWorkspaceAccess} from './chat.js?v=20260819-3';
+import {$, api, state, userErrorMessage} from './core.js?v=20261103-2';
+import {appendMessage, replaceAssistantMessage} from './chats.js?v=20261103-2';
+import {syncWorkspaceAccess} from './chat.js?v=20261103-2';
 
 export const CHAT_MODES = new Set(['ask', 'auto', 'coding']);
 export const MODE_PLACEHOLDERS = {

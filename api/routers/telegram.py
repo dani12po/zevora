@@ -210,3 +210,84 @@ def reset_telegram_config():
     for key in ('ZEVORA_TELEGRAM_BOT_TOKEN', 'ZEVORA_TELEGRAM_GATEWAY_TOKEN'):
         os.environ.pop(key, None)
     return {'ok': True, 'cleared': True}
+
+
+# ── Token verification & test-chat ───────────────────────────────────────────
+
+@app.post('/api/telegram/verify')
+def telegram_verify_token():
+    """Check the saved bot token against the Telegram Bot API (getMe)."""
+    import json as _json
+    import urllib.request as _urllib
+
+    cfg = _load_config()
+    token = cfg.get('bot_token') or os.environ.get('ZEVORA_TELEGRAM_BOT_TOKEN', '')
+    if not token:
+        raise HTTPException(400, {
+            'code': 'TELEGRAM_NOT_CONFIGURED',
+            'message': 'Save a bot token first.',
+        })
+    try:
+        req = _urllib.Request(
+            f'https://api.telegram.org/bot{token}/getMe', method='GET')
+        with _urllib.urlopen(req, timeout=10) as resp:
+            payload = _json.loads(resp.read().decode('utf-8'))
+    except Exception:
+        return {'ok': False, 'valid': False, 'error': 'TELEGRAM_UNREACHABLE_OR_REJECTED'}
+    if not payload.get('ok'):
+        return {'ok': True, 'valid': False, 'error': 'TELEGRAM_TOKEN_REJECTED'}
+    bot = payload.get('result', {})
+    return {
+        'ok': True,
+        'valid': True,
+        'bot_username': bot.get('username'),
+        'bot_name': bot.get('first_name'),
+    }
+
+
+class TelegramTestChatRequest(BaseModel):
+    message: str
+
+
+@app.post('/api/telegram/test-chat')
+def telegram_test_chat(body: TelegramTestChatRequest):
+    """Send a test message through the bot to verify end-to-end connectivity."""
+    import json as _json
+    import urllib.request as _urllib
+
+    cfg = _load_config()
+    token = cfg.get('bot_token') or os.environ.get('ZEVORA_TELEGRAM_BOT_TOKEN', '')
+    if not token:
+        raise HTTPException(400, {
+            'code': 'TELEGRAM_NOT_CONFIGURED',
+            'message': 'Save a bot token first.',
+        })
+    raw = body.message.strip()
+    # If the value looks like a numeric chat id use it directly, otherwise
+    # treat the whole string as the message target (Telegram will reject it
+    # gracefully and we surface that error to the user).
+    chat_id = raw.lstrip('-') if raw.lstrip('-').isdigit() else raw
+    try:
+        req = _urllib.Request(
+            f'https://api.telegram.org/bot{token}/sendMessage',
+            data=_json.dumps({
+                'chat_id': chat_id,
+                'text': 'ZEVORA test message — connection works! 🎉',
+            }).encode(),
+            headers={'Content-Type': 'application/json'},
+            method='POST',
+        )
+        with _urllib.urlopen(req, timeout=10) as resp:
+            payload = _json.loads(resp.read().decode('utf-8'))
+    except Exception:
+        return {
+            'ok': False, 'sent': False,
+            'error': (
+                'Could not deliver the message. '
+                'Check the chat id and make sure you sent /start to the bot first.'
+            ),
+        }
+    if not payload.get('ok'):
+        desc = str(payload.get('description', 'Telegram rejected the message'))[:200]
+        return {'ok': True, 'sent': False, 'error': desc}
+    return {'ok': True, 'sent': True}

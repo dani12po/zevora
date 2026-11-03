@@ -1,4 +1,4 @@
-import {$, state} from './core.js?v=20260819-3';
+import {$, state} from './core.js?v=20261103-2';
 
 export const WORKSPACE_ROUTES = new Set(['/filesystem', '/terminal']);
 const KEYS = {

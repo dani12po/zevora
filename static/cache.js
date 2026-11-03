@@ -1,4 +1,4 @@
-import {$, api, badge, escapeHtml, exposeHandlers, fmtBytes, pageWrap, setPanel, stateIndicator} from './core.js?v=20260819-3';
+import {$, api, badge, escapeHtml, exposeHandlers, fmtBytes, pageWrap, setPanel, stateIndicator} from './core.js?v=20261103-2';
 
 const CATEGORY_LABELS = {raw:'RAW',processed:'PROC',curated:'CUR',memory:'MEM',cache:'CACHE',embeddings:'EMB',datasets:'DATA',archive:'ARC',evaluation:'EVAL',logs:'LOG',models:'MODEL'};
 

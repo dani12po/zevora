@@ -1,6 +1,6 @@
-import {$, api, escapeHtml, exposeHandlers, loadingState, navigate, pageWrap, setMessages, setPanel, setSidebarOpen, state, userErrorMessage} from './core.js?v=20260819-3';
-import {renderMarkdown} from './markdown.js?v=20260819-3';
-import {cancelReveals, revealText} from './chat-reveal.js?v=20260819-3';
+import {$, api, escapeHtml, exposeHandlers, loadingState, navigate, pageWrap, setMessages, setPanel, setSidebarOpen, state, userErrorMessage} from './core.js?v=20261103-2';
+import {renderMarkdown} from './markdown.js?v=20261103-2';
+import {cancelReveals, revealText} from './chat-reveal.js?v=20261103-2';
 export {cancelReveals, revealText};
 
 let renamingChatId = null;

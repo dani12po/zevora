@@ -1,5 +1,5 @@
 // Scheduled tasks page — list, create, toggle, delete, and run ZEVORA automations.
-import {$, api, escapeHtml, loadingState, pageWrap, setMessages} from './core.js?v=20260819-3';
+import {$, api, escapeHtml, loadingState, pageWrap, setMessages} from './core.js?v=20261103-2';
 
 const KIND_LABELS = {
   once: 'Once (ISO time)',

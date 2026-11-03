@@ -1,5 +1,5 @@
-import {$, exposeHandlers, state} from './core.js?v=20260819-3';
-import {focusWorkspaceTerminal} from './workspace.js?v=20260819-3';
+import {$, exposeHandlers, state} from './core.js?v=20261103-2';
+import {focusWorkspaceTerminal} from './workspace.js?v=20261103-2';
 
 let openChatPage = async () => {};
 

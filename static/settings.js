@@ -1,4 +1,4 @@
-import {$, api, escapeHtml, pageWrap, setPanel, userErrorMessage} from './core.js?v=20260819-3';
+import {$, api, escapeHtml, pageWrap, setPanel, userErrorMessage} from './core.js?v=20261103-2';
 
 export async function renderSettings() {
   const [settings, tg] = await Promise.all([

@@ -1,8 +1,8 @@
 // First-run onboarding wizard — three steps: welcome, folder (optional), first chat.
 // Shows once; dismissal is stored in localStorage so returning users never see it again.
-import {$, api, navigate} from './core.js?v=20260819-3';
-import {pickProject, refreshProjects} from './chat.js?v=20260819-3';
-import {newChat} from './chats.js?v=20260819-3';
+import {$, api, navigate} from './core.js?v=20261103-2';
+import {pickProject, refreshProjects} from './chat.js?v=20261103-2';
+import {newChat} from './chats.js?v=20261103-2';
 
 const ONBOARDING_KEY = 'zevora.onboarding.done';
 

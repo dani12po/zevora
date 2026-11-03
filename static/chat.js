@@ -1,7 +1,7 @@
-import {$, api, emptyState, escapeHtml, fmtBytes, navigate, setMessages, state, stateIndicator, userErrorMessage} from './core.js?v=20260819-3';
-import {appendMessage, cancelReveals, configureMessageActions, newChat, refreshSidebarChats, replaceAssistantMessage} from './chats.js?v=20260819-3';
-import {ensureWorkspaceChatOpen} from './workspace.js?v=20260819-3';
-import {getChatMode, setChatMode, parseSlashCommand, renderSkillsMessage, routeCodingPrompt} from './chatmode.js?v=20260819-3';
+import {$, api, emptyState, escapeHtml, fmtBytes, navigate, setMessages, state, stateIndicator, userErrorMessage} from './core.js?v=20261103-2';
+import {appendMessage, cancelReveals, configureMessageActions, newChat, refreshSidebarChats, replaceAssistantMessage} from './chats.js?v=20261103-2';
+import {ensureWorkspaceChatOpen} from './workspace.js?v=20261103-2';
+import {getChatMode, setChatMode, parseSlashCommand, renderSkillsMessage, routeCodingPrompt} from './chatmode.js?v=20261103-2';
 
 const LIMITS = {image:8_000_000,pdf:12_000_000,text:2_000_000};
 let projectSelectionGeneration = 0;
