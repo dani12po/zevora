@@ -15,6 +15,7 @@ import {renderMemory} from './memory.js?v=20260819-3';
 import {renderCache} from './cache.js?v=20260819-3';
 import {renderUsage} from './usage.js?v=20260819-3';
 import {renderSettings} from './settings.js?v=20260819-3';
+import {maybeShowOnboarding} from './onboarding.js?v=20260819-3';
 
 const workspaceRoute = handler => async () => {
   syncWorkspaceLayout(location.pathname);
@@ -106,3 +107,4 @@ checkGateway();
 setInterval(checkGateway, 30000);
 Promise.allSettled([refreshProjects(), refreshSidebarChats()]);
 render(location.pathname);
+maybeShowOnboarding();

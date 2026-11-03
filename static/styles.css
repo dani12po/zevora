@@ -780,3 +780,10 @@ menu button[value="default"]:hover{background:var(--accent-hover)}
 .composer-menu button{display:flex;justify-content:space-between;align-items:center;gap:12px;width:100%;padding:8px 10px;background:transparent;border:0;border-radius:6px;color:var(--text);font-size:12px;cursor:pointer;text-align:left}
 .composer-menu button:hover{background:var(--surface2)}
 .composer-menu .menu-hint{color:var(--text3);font-size:11px}
+
+/* ── Onboarding wizard ─────────────────────────────────────────────── */
+.onboarding-body{max-width:420px;padding:8px 4px}
+.onboarding-body h2{margin:0 0 6px;font-size:20px}
+.onboarding-steps{margin:14px 0 18px;padding-left:20px;display:grid;gap:8px;font-size:14px;color:var(--text-muted,#6b6259)}
+.onboarding-actions{display:flex;gap:10px;justify-content:flex-end}
+.onboarding-actions .btn-sm{min-height:34px}

@@ -242,9 +242,10 @@ async function loadVaultList(query) {
   const deleteAllButton = $('delete-all-chats');
   if (deleteAllButton) { if (chats.length) deleteAllButton.disabled = false; deleteAllButton.onclick = deleteAllChats; }
   if (!chats.length) { container.innerHTML = `<div class="empty empty-state-compact"><b>No chats</b><p>${query ? `No results for "${escapeHtml(query)}"` : 'Start a conversation to see history here.'}</p></div>`; return; }
-  const rows = chats.map(chat => `<div class="vault-row"><button class="chat-item vault-chat-item" data-chat-id="${escapeHtml(chat.id)}"><span class="chat-item-title">${escapeHtml(chat.title)}</span></button><div class="vault-actions"><button class="btn-sm rename-chat" data-chat-id="${escapeHtml(chat.id)}">Rename</button><button class="btn-sm danger delete-chat" data-chat-id="${escapeHtml(chat.id)}">Delete</button></div></div>`).join('');
+  const rows = chats.map(chat => `<div class="vault-row"><button class="chat-item vault-chat-item" data-chat-id="${escapeHtml(chat.id)}"><span class="chat-item-title">${escapeHtml(chat.title)}</span></button><div class="vault-actions"><button class="btn-sm export-chat" data-chat-id="${escapeHtml(chat.id)}" title="Download as Markdown">Export</button><button class="btn-sm rename-chat" data-chat-id="${escapeHtml(chat.id)}">Rename</button><button class="btn-sm danger delete-chat" data-chat-id="${escapeHtml(chat.id)}">Delete</button></div></div>`).join('');
   container.innerHTML = rows;
   container.querySelectorAll('.vault-chat-item').forEach(button => button.onclick = () => openChat(button.dataset.chatId));
+  container.querySelectorAll('.export-chat').forEach(button => button.onclick = () => exportChat(button.dataset.chatId));
   container.querySelectorAll('.rename-chat').forEach(button => button.onclick = () => startRenameChat(button.dataset.chatId, chats.find(chat => String(chat.id) === button.dataset.chatId)?.title || ''));
   container.querySelectorAll('.delete-chat').forEach(button => button.onclick = () => deleteChat(button.dataset.chatId, chats.find(chat => String(chat.id) === button.dataset.chatId)?.title || ''));
 }
@@ -273,6 +274,19 @@ async function deleteAllChats() {
 }
 async function deleteChat(id, title) { if (!confirm(`Delete "${title}"?`)) return; await api(`/api/chats/${id}`,{method:'DELETE'}); if (state.activeChat === id) state.activeChat = null; await (location.pathname === '/chats' ? renderChatVault() : refreshSidebarChats()); }
 function startRenameChat(id, title) { renamingChatId = id; $('rename-chat-input').value = title; $('rename-chat-dialog').showModal(); }
+export async function exportChat(id) {
+  try {
+    const result = await api(`/api/chats/${encodeURIComponent(id)}/export?format=markdown`);
+    const blob = new Blob([result.markdown || ''], {type: 'text/markdown'});
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url; anchor.download = `${id}.md`;
+    document.body.appendChild(anchor); anchor.click(); anchor.remove();
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    console.error('export failed', error);
+  }
+}
 export async function confirmRenameChat(event) { event?.preventDefault(); const title = $('rename-chat-input').value.trim(); if (!title || !renamingChatId) return; await api(`/api/chats/${renamingChatId}`,{method:'PATCH',body:JSON.stringify({title})}); renamingChatId = null; $('rename-chat-dialog').close(); await (location.pathname === '/chats' ? renderChatVault() : refreshSidebarChats()); }
 
 exposeHandlers({openChat,confirmRenameChat});

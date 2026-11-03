@@ -1,0 +1,20 @@
+services:
+  zevora:
+    build: .
+    container_name: zevora
+    ports:
+      - "7432:7432"
+    volumes:
+      # Persist chats, memory, and index across restarts
+      - zevora-data:/app/data
+      # Cache the downloaded Lexi GGUF model (~5 GB) outside the image
+      - zevora-models:/home/zevora/.cache
+    environment:
+      - ZEVORA_RATE_LIMIT=${ZEVORA_RATE_LIMIT:-60}
+      # Optional: point at an Ollama instance on the host
+      # - ZEVORA_OLLAMA_URL=http://host.docker.internal:11434
+    restart: unless-stopped
+
+volumes:
+  zevora-data:
+  zevora-models:
