@@ -59,6 +59,29 @@ mcp_gateway       = LocalMCPGateway()
 terminal_sessions = TerminalSessionManager()
 hybrid_router     = AdaptiveHybridRouter()
 workspace_manager = WorkspaceManager(ROOT / 'data' / 'database' / 'workspace.db')
+from agent.core.scheduler import ScheduledTaskStore, TaskScheduler
+scheduled_task_store = ScheduledTaskStore(ROOT / 'data' / 'database' / 'scheduler.db')
+
+
+def _run_scheduled_task(task: dict) -> str:
+    """Execute a scheduled task prompt through the cloud-completion fallback loop."""
+    import asyncio
+
+    from api.routing import _cloud_completion
+
+    async def _run():
+        return await _cloud_completion(
+            task['prompt'],
+            'You are ZEVORA, a scheduled automation assistant. '
+            'Answer the scheduled prompt concisely and actionably.',
+            require_native_tools=False,
+        )
+
+    response = asyncio.run(_run())
+    return str(response.get('response', ''))[:4_000]
+
+
+scheduler = TaskScheduler(scheduled_task_store, _run_scheduled_task)
 _PROVIDER_CONFIG_LOCK = asyncio.Lock()
 
 
@@ -86,7 +109,10 @@ from api.helpers import (  # re-exported for backward compatibility
 async def lifespan(_app):
     # One bounded startup refresh; requests never trigger repeated model discovery.
     await ProviderDiscovery(model_registry).refresh()
+    # Start the scheduled-task scheduler; a no-op unless tasks exist.
+    scheduler.start()
     yield
+    scheduler.stop()
 
 app = FastAPI(
     title='ZEVORA — Zero-External Vendor Oriented Reasoning Agent',
@@ -170,6 +196,8 @@ __all__ = [
     'local_runtime_status', 'remote_endpoint_status', 'ProviderDiscovery',
     'RATE_LIMIT_MAX_REQUESTS', 'RATE_LIMIT_WINDOW_SECONDS', 'RATE_LIMIT_PATH_PREFIXES',
     '_rate_limit_events', '_rate_limit_lock', '_schedule_shutdown',
+    'telegram_status', 'telegram_gateway_heartbeat', 'telegram_gateway_disconnect',
+    'gateway_heartbeat', 'gateway_disconnect', '_gateway_state',
     '_routing', '_core_router', '_health_router', '_providers_router',
     '_workspace_router', '_chats_router', '_chatflow_router', '_planning_router',
     '_tasks_router', '_spa_router',
@@ -194,11 +222,19 @@ from api.routers import (  # noqa: E402,F401
     chatflow as _chatflow_router,
     planning as _planning_router,
     tasks as _tasks_router,
+    schedules as _schedules_router,
+    telegram as _telegram_router,
     spa as _spa_router,
 )
 
 # Re-export endpoint handlers and routing internals so callers (tests, CLI,
 # zevora.core) can address them as main.* attributes.
+_ = _schedules_router  # referenced so the import is not unused
+_ = _telegram_router
+from api.routers.telegram import (  # noqa: E402,F401
+    telegram_status, telegram_gateway_heartbeat, telegram_gateway_disconnect,
+    gateway_heartbeat, gateway_disconnect, _gateway_state,
+)  # noqa: F401  re-exported for backward compatibility
 from api.routers.chats import chat_message, regenerate_message, message_feedback  # noqa: E402,F401
 from api.routers.chatflow import (  # noqa: E402,F401
     chat, chat_stream, cancel_chat_request, _chat_request, _execute_chat_request,

@@ -787,3 +787,13 @@ menu button[value="default"]:hover{background:var(--accent-hover)}
 .onboarding-steps{margin:14px 0 18px;padding-left:20px;display:grid;gap:8px;font-size:14px;color:var(--text-muted,#6b6259)}
 .onboarding-actions{display:flex;gap:10px;justify-content:flex-end}
 .onboarding-actions .btn-sm{min-height:34px}
+
+/* ── Scheduled tasks page ──────────────────────────────────────────── */
+.schedule-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 8px;border-bottom:1px solid var(--border,#e8e2da)}
+.schedule-info{display:grid;gap:2px;min-width:0}
+.schedule-info b{font-size:14px}
+.schedule-info .technical-text{font-size:12px;color:var(--text-muted,#6b6259)}
+.schedule-form{display:grid;gap:10px;max-width:480px;margin-top:16px;padding:16px;border:1px solid var(--border,#e8e2da);border-radius:var(--radius-sm,8px)}
+.schedule-form h3{margin:0}
+.schedule-form label{display:grid;gap:4px;font-size:13px}
+.schedule-form input,.schedule-form textarea,.schedule-form select{padding:8px;border:1px solid var(--border,#e8e2da);border-radius:6px;font:inherit;white-space:pre-wrap}

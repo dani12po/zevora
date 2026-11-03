@@ -16,6 +16,7 @@ import {renderCache} from './cache.js?v=20260819-3';
 import {renderUsage} from './usage.js?v=20260819-3';
 import {renderSettings} from './settings.js?v=20260819-3';
 import {maybeShowOnboarding} from './onboarding.js?v=20260819-3';
+import {renderSchedules} from './schedules.js?v=20260819-3';
 
 const workspaceRoute = handler => async () => {
   syncWorkspaceLayout(location.pathname);
@@ -40,6 +41,7 @@ export const ROUTES = {
   '/memory': standardRoute(renderMemory),
   '/cache': standardRoute(renderCache),
   '/usage': standardRoute(renderUsage),
+  '/schedules': standardRoute(renderSchedules),
   '/settings': standardRoute(renderSettings),
 };
 
