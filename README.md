@@ -25,10 +25,12 @@ ZEVORA is a full AI coding assistant you deploy on your own machine. It ships wi
 | ☁️ **Cloud provider support** | DeepSeek · OpenAI · Anthropic · Gemini · xAI · NVIDIA NIM |
 | 🧠 **Adaptive hybrid router** | Auto-picks the best model per task — local for simple, cloud for complex |
 | 📁 **Project context engine** | Indexes your codebase so the AI understands your files |
-| 🛠️ **MCP Tools** | File read/write · Terminal · Git — all approval-gated, never runs without you |
+| 🛠️ **MCP Tools** | File read/write · Terminal · Git — all approval-gated |
 | 💾 **Local memory & cache** | Remembers useful patterns across sessions, avoids repeat API calls |
 | 🔒 **Privacy-first** | API keys never stored in DB, logs, or visible in the UI |
 | 🖥️ **Web UI** | Clean browser interface — chat, providers, memory, router, filesystem |
+| 📅 **Scheduled Tasks** | Cron-like automations — run any prompt on a schedule |
+| 📱 **Telegram Bot** | Chat with ZEVORA from your phone via Telegram |
 
 ---
 
@@ -50,6 +52,12 @@ cd zevora
 python3 bootstrap.py
 ```
 
+### Docker (one-liner)
+
+```bash
+docker compose up -d
+```
+
 `bootstrap.py` creates a virtual environment, installs all dependencies, and registers the `zevora` CLI command.
 
 ### Start ZEVORA
@@ -58,7 +66,7 @@ python3 bootstrap.py
 zevora
 ```
 
-> If `zevora` is not in PATH yet (common on Windows before restarting the terminal):
+> If `zevora` is not in PATH yet:
 > ```bash
 > python launcher.py
 > ```
@@ -81,11 +89,12 @@ zevora intelligence  # Show local model, skills, and privacy status
 zevora background    # Start and detach (keeps running after terminal closes)
 ```
 
-After starting, navigate to the Web UI and:
+After starting, navigate to the Web UI:
 
 1. **Chat** — Start asking questions immediately (uses local model by default)
 2. **Open a project** — Click "Open folder" to let ZEVORA read and edit your files
 3. **Add a cloud provider** — Go to **Providers** → paste your API key for cloud fallback
+4. **Connect Telegram** — Go to **Telegram** → paste bot token → verify → done
 
 ---
 
@@ -141,9 +150,7 @@ CLOUD_DEFAULT_PROVIDER=gemini
 
 The local model is **optional** but lets ZEVORA work fully offline with no API costs.
 
-**Model:** Lexi Llama 3 8B Q4\_K\_M (~4.7 GB)
-**RAM needed:** ~6 GB free
-**Disk needed:** ~4.7 GB
+**Model:** Lexi Llama 3 8B Q4\_K\_M (~4.7 GB) · **RAM needed:** ~6 GB · **Disk:** ~4.7 GB
 
 ### Step 1 — Install llama-cpp-python
 
@@ -162,29 +169,21 @@ The local model is **optional** but lets ZEVORA work fully offline with no API c
 
 **GPU acceleration (NVIDIA CUDA):**
 
-Set `LOCAL_MODEL_GPU_LAYERS=35` in `.env`, then install the CUDA wheel:
+Set `LOCAL_MODEL_GPU_LAYERS=35` in `.env`, then:
 
 ```bash
-# Replace cu121 with your CUDA version (cu118, cu121, cu122, cu123...)
 pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121
 ```
 
 ### Step 2 — Download the model
 
-**From the Web UI:**
-1. Open **Local Intelligence** in the sidebar
-2. Click **Install Recommended Model**
-3. Wait for the ~4.7 GB download to finish
+From the Web UI: **Local Intelligence** → **Install Recommended Model** → wait ~4.7 GB download.
 
-**From the CLI:**
+Or from CLI:
 
 ```bash
 python scripts/download_lexi.py
 ```
-
-### Step 3 — Verify it's loaded
-
-Go to **Providers** in the UI — the Zevora Local AI card should show **loaded** with a green dot.
 
 ---
 
@@ -203,26 +202,66 @@ You can also add any **OpenAI-compatible** endpoint (Ollama, LM Studio, vLLM, et
 
 ---
 
-## How Routing Works
+## Scheduled Tasks
 
-ZEVORA's adaptive hybrid router automatically selects the best model for each request:
+ZEVORA has a built-in cron-like scheduler — run any prompt automatically on a schedule while the gateway is running.
 
-| Task type | Route |
-|---|---|
-| Quick Q&A, short code snippets | 🏠 Local model (fast, free) |
-| Complex reasoning, architecture design | ☁️ Cloud (more capable) |
-| Vision / image understanding | ☁️ Cloud (local doesn't support vision) |
-| Long context > 8 000 tokens | ☁️ Cloud (exceeds local context window) |
-| No internet / `LOCAL_ONLY` mode | 🏠 Local only |
-| `CLOUD_ONLY` mode | ☁️ Cloud always |
+**From the Web UI:** go to **Scheduled Tasks** in the sidebar.
 
-The router also considers: provider health history, cost, latency, task complexity score, and whether the request needs specific tools.
+| Schedule type | Format | Example |
+|---|---|---|
+| `daily` | `HH:MM` (UTC) | `08:00` |
+| `weekly` | `DDD:HH:MM` (UTC) | `mon:09:00` |
+| `interval` | Every N minutes | `60` |
+| `once` | ISO datetime | `2026-12-01T08:00:00+00:00` |
+
+Example use cases:
+- Daily standup summary: *"Summarize what I worked on today based on recent git commits"*
+- Weekly code review: *"Review the open TODOs in the project and suggest priorities"*
+- Hourly health check: *"Check if there are any critical errors in the last hour's logs"*
+
+---
+
+## Telegram Bot
+
+Chat with ZEVORA from your phone via Telegram — no `.env` editing required.
+
+### Setup (2 minutes)
+
+1. Open Telegram → search **@BotFather** → send `/newbot` → copy the token
+2. Open ZEVORA **Settings** (or the **Telegram** page in the sidebar)
+3. Paste the bot token → click **Generate** for the gateway token → **Save & apply**
+4. Click **Verify token** to confirm the bot is reachable
+5. Start the gateway process:
+
+```bash
+python scripts/telegram_gateway.py
+```
+
+6. Send `/start` to your bot in Telegram — done!
+
+### How it works
+
+```
+Your phone (Telegram)
+      ↓  long-poll
+scripts/telegram_gateway.py
+      ↓  POST /api/chat
+ZEVORA gateway (localhost:7432)
+      ↓
+AI response → back to Telegram
+```
+
+- All config (bot token, gateway token, allowed users) is saved to `config/telegram.json` — no `.env` needed
+- Bot token is never exposed in the UI — only shown masked
+- Allowed users list restricts who can message the bot
+- The gateway process can run on the same machine or a remote server/VPS
 
 ---
 
 ## MCP Tools (Agent Actions)
 
-When you open a project folder, ZEVORA's agent can act on your files. All mutations require your explicit approval before they execute.
+When you open a project folder, ZEVORA's agent can act on your files. All mutations require your explicit approval.
 
 | Tool | Permission | Description |
 |---|---|---|
@@ -236,7 +275,18 @@ When you open a project folder, ZEVORA's agent can act on your files. All mutati
 | `execute_command` | Auto-allow | Run a terminal command |
 | `git` | Auto-allow | Git status, diff, log inspection |
 
-Change permissions in the **MCP Tools** page in the UI.
+---
+
+## How Routing Works
+
+| Task type | Route |
+|---|---|
+| Quick Q&A, short code snippets | 🏠 Local model (fast, free) |
+| Complex reasoning, architecture design | ☁️ Cloud (more capable) |
+| Vision / image understanding | ☁️ Cloud (local doesn't support vision) |
+| Long context > 8 000 tokens | ☁️ Cloud (exceeds local context window) |
+| No internet / `LOCAL_ONLY` mode | 🏠 Local only |
+| `CLOUD_ONLY` mode | ☁️ Cloud always |
 
 ---
 
@@ -244,31 +294,55 @@ Change permissions in the **MCP Tools** page in the UI.
 
 ```
 zevora/
-├── main.py                   # FastAPI gateway — all API routes live here
+├── main.py                   # FastAPI gateway entry point (slim — logic in api/)
 ├── launcher.py               # Standalone launcher (no PATH setup needed)
 ├── bootstrap.py              # First-run installer
+├── Dockerfile                # Container image
+├── docker-compose.yml        # One-command Docker deploy
 ├── .env.example              # All config options with documentation
 │
+├── api/                      # Modular API layer
+│   ├── schemas.py            # Pydantic request models
+│   ├── orchestrators.py      # Chat execution logic
+│   ├── routing.py            # Hybrid router candidates
+│   ├── progress.py           # Workflow progress & SSE events
+│   ├── helpers.py            # Shared utilities
+│   └── routers/              # FastAPI routers per domain
+│       ├── chatflow.py       # POST /api/chat, /api/chat/stream
+│       ├── chats.py          # Conversation CRUD
+│       ├── providers.py      # Provider config & manifests
+│       ├── workspace.py      # Project & filesystem
+│       ├── health.py         # Health, stats, settings, storage
+│       ├── schedules.py      # Scheduled tasks CRUD + run-now
+│       ├── telegram.py       # Telegram config, verify, test-chat
+│       └── planning.py       # Agent planning
+│
 ├── agent/
-│   ├── core/                 # Chat execution, planning, attachments, workspace
-│   ├── providers/            # DeepSeek, OpenAI, Anthropic, Gemini, local, etc.
-│   ├── routing/              # Adaptive hybrid router and model selector
-│   ├── storage/              # Cache, memory, deduplication, compression
+│   ├── core/                 # Chat, planning, attachments, scheduler
+│   ├── providers/            # DeepSeek, OpenAI, Anthropic, Gemini, local…
+│   ├── routing/              # Adaptive hybrid router
+│   ├── storage/              # Cache, memory, deduplication
 │   ├── tools/                # MCP tool gateway and permissions
-│   ├── evolution/            # Pattern learning, skill registry, knowledge engine
-│   └── models/               # Local model manager, downloader, registry
+│   ├── evolution/            # Pattern learning, skill registry
+│   └── models/               # Local model manager, downloader
 │
-├── static/                   # Frontend — vanilla JS, zero build step required
-│   ├── app.js                # SPA router and page loader
+├── static/                   # Frontend — vanilla JS, zero build step
+│   ├── app.js                # SPA router
 │   ├── chat.js               # Chat interface and streaming
-│   ├── providers.js          # Provider management UI
-│   ├── local-ai.js           # Local model install and status
-│   └── styles.css            # All styles (single file)
+│   ├── providers.js          # Provider management
+│   ├── telegram.js           # Telegram connect page
+│   ├── schedules.js          # Scheduled tasks page
+│   ├── settings.js           # Settings + Telegram config
+│   ├── onboarding.js         # First-run wizard
+│   └── styles.css            # All styles
 │
+├── scripts/
+│   ├── telegram_gateway.py   # Standalone Telegram bot gateway process
+│   └── download_lexi.py      # Download local model from CLI
+│
+├── config/                   # Runtime config (providers.json, telegram.json…)
 ├── zevora/                   # CLI entry point (`zevora` command)
-├── config/                   # Default provider config and UI settings
 ├── docs/                     # Extended documentation
-├── scripts/                  # Utility scripts (model download, version bump)
 └── tests/                    # Pytest test suite
 ```
 
@@ -277,51 +351,26 @@ zevora/
 ## System Architecture
 
 ```
-  Browser (http://127.0.0.1:7432)
-        │
-        ▼
-  FastAPI Gateway (main.py)
-        │
-        ├─── Agent Core
-        │     ├── Project Context Index  (indexes codebase for retrieval)
-        │     ├── Exact Cache            (skips API calls for repeated questions)
-        │     ├── Memory Store           (persists patterns across sessions)
-        │     └── Experience Log         (tracks routing performance over time)
-        │
-        ├─── Adaptive Hybrid Router
-        │     ├── Scores by: capability · cost · latency · task complexity
-        │     ├── 🏠 Zevora Local AI     (llama.cpp GGUF, lazy-loaded on first use)
-        │     └── ☁️  Cloud Providers    (DeepSeek / OpenAI / Anthropic / Gemini / ...)
-        │
-        └─── MCP Tool Gateway (approval-gated)
-              ├── Filesystem  (read / write / search / delete)
-              ├── Terminal    (execute shell commands)
-              └── Git         (status / diff / log)
-```
-
----
-
-## Custom Providers
-
-Connect any OpenAI-compatible endpoint (local or cloud) via **Providers → Add new provider**:
-
-1. Enter a short **ID** (e.g. `my-ollama`)
-2. Set **Protocol** to `openai-compatible`
-3. Enter the **Base URL** (e.g. `http://localhost:11434/v1`)
-4. Enter the **Default Model** (e.g. `llama3`)
-5. Click **Save provider** then **Test connection**
-
-The provider enters the same routing pool as built-in providers — ZEVORA will use it automatically.
-
-**CLI equivalent:**
-
-```bash
-zevora provider add \
-  --id my-provider \
-  --name "My Provider" \
-  --protocol openai-compatible \
-  --base-url https://api.example.com/v1 \
-  --model my-model
+  Browser (http://127.0.0.1:7432)       Telegram App
+         │                                    │
+         ▼                                    ▼
+  FastAPI Gateway (main.py)      telegram_gateway.py (standalone)
+         │                                    │
+         │◄───────── POST /api/chat ──────────┘
+         │
+         ├── Agent Core
+         │    ├── Project Context Index
+         │    ├── Exact Cache
+         │    ├── Memory Store
+         │    ├── Scheduled Task Scheduler
+         │    └── Experience Log
+         │
+         ├── Adaptive Hybrid Router
+         │    ├── 🏠 Zevora Local AI  (llama.cpp GGUF)
+         │    └── ☁️  Cloud Providers (DeepSeek / OpenAI / Anthropic / Gemini…)
+         │
+         └── MCP Tool Gateway (approval-gated)
+              ├── Filesystem · Terminal · Git
 ```
 
 ---
@@ -329,64 +378,48 @@ zevora provider add \
 ## Running Tests
 
 ```bash
-# Full test suite
 pytest tests/
 
 # Quick smoke test
 pytest tests/test_gateway.py tests/test_core.py -v
-
-# Skip tests that require a live model
-pytest tests/ -k "not local_model"
 ```
 
 ---
 
 ## Troubleshooting
 
-**`zevora` command not found after bootstrap:**
+**`zevora` command not found:**
 ```bash
 python launcher.py
-# or restart the terminal and try again
 ```
 
-**Local model not loading — stays `NOT_INSTALLED`:**
-- Verify `llama-cpp-python` is installed: `python -c "import llama_cpp; print('ok')"`
-- Check you have ~6 GB RAM free
-- Re-run the model download from **Local Intelligence** in the UI
+**Local model not loading:**
+- Check: `python -c "import llama_cpp; print('ok')"`
+- Need ~6 GB RAM free
+- Re-run model download from **Local Intelligence** in the UI
 
 **Chat returns 400 / provider not configured:**
-- Make sure the API key is filled in `.env` (not just the example file)
-- **Restart the server** after editing `.env` — settings are read at startup
-- Check the Providers page — the status dot should be green ✅
+- Fill in the API key in `.env` or via the **Providers** page
+- Restart the server after editing `.env`
+- Status dot should be green ✅
 
-**Port 7432 already in use:**
+**Telegram bot not responding:**
+- Check the gateway process is running: `python scripts/telegram_gateway.py`
+- Verify the token at **Telegram** page → **Verify token**
+- Make sure you sent `/start` to the bot in Telegram first
+- Check **Telegram** page → gateway status indicator
+
+**Port already in use:**
 ```bash
-zevora stop
-zevora start
+zevora stop && zevora start
 ```
 
-**RAM is too full to load the local model:**
-
-Set `ROUTING_MODE=CLOUD_ONLY` in `.env` to skip local model entirely and use only cloud providers.
-
-**`storage budget > disk space` warning:**
-
-Lower `MAX_TOTAL_STORAGE_GB` in `.env` to match your available disk:
+**Storage budget warning:**
 ```dotenv
 MAX_TOTAL_STORAGE_GB=10
 WARNING_STORAGE_GB=8
 CRITICAL_STORAGE_GB=9
 ```
-
----
-
-## Privacy & Security
-
-- **API keys** — stored only in `.env`. Never written to the database, logs, cache, or shown anywhere in the UI.
-- **Conversations** — stored locally in SQLite at `data/database/agent.db`. Never sent anywhere.
-- **Collective learning** — **disabled by default**. Requires explicit opt-in per data type in `.env`.
-- **Tool execution** — file writes, terminal commands, and mutations always require your approval click before running.
-- **Custom runtime providers** — execute in a sandboxed subprocess. Auto-trust is never granted; you must explicitly trust after reviewing the source.
 
 ---
 
@@ -400,19 +433,28 @@ CRITICAL_STORAGE_GB=9
 | [docs/MCP_TOOLS.md](docs/MCP_TOOLS.md) | Full MCP tool reference and permission system |
 | [docs/ADAPTIVE_ROUTING.md](docs/ADAPTIVE_ROUTING.md) | How the hybrid router scores and selects models |
 | [docs/WORKSPACE.md](docs/WORKSPACE.md) | Project indexing, context, and agent workspace |
-| [docs/STORAGE_POLICY.md](docs/STORAGE_POLICY.md) | Cache, memory, retention, and storage budget |
 | [SECURITY.md](SECURITY.md) | Security policy and responsible disclosure |
+| [PROMOTION.md](PROMOTION.md) | How to share and promote ZEVORA |
+
+---
+
+## Privacy & Security
+
+- **API keys** — stored only in `.env`. Never in the database, logs, or UI
+- **Telegram bot token** — saved to `config/telegram.json`, never returned by any API (only masked)
+- **Conversations** — stored locally in SQLite at `data/database/agent.db`
+- **Collective learning** — **disabled by default**, requires explicit opt-in
+- **Tool execution** — file writes, terminal commands always require your approval click
+- **Custom providers** — sandboxed subprocess, never auto-trusted
 
 ---
 
 ## Contributing
 
-Contributions are welcome. Open an issue first for significant changes so we can discuss direction before you build.
-
 1. Fork the repo
 2. Create a branch: `git checkout -b feat/your-feature`
 3. Make your changes and add tests
-4. Run the test suite: `pytest tests/`
+4. Run: `pytest tests/`
 5. Open a pull request
 
 ---
